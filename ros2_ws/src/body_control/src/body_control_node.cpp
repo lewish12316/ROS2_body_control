@@ -22,7 +22,7 @@ public:
     ad_mode_pub_ = create_publisher<std_msgs::msg::Bool>("ad_mode_req", 10);
 
 
-    // 50ms 检查调度到期时间，P0 5 秒、P1 120 秒分别计时。
+    // 50ms 检查调度：P0 5 秒，自动前进 120 秒，远程/遥控行驶 60 秒。
     timer_ = create_wall_timer(50ms, [this]() { update_voice_scene(); });
 
 
@@ -30,10 +30,11 @@ public:
     mode_sub_ = create_subscription<std_msgs::msg::Int32>(
       "veh_mode_st", rclcpp::QoS(1).best_effort(),
       [this](std_msgs::msg::Int32::ConstSharedPtr msg) {
+        state_.veh_mode_st = msg->data; // 保存已有模式信号，供 ID 14 调度使用。
         if (auto_drive_.set_mode(msg->data)) {
           publish_ad_mode_request();
-          update_voice_scene();
         }
+        update_voice_scene();
       });
     //启动按键指令（0-停止，1-启动）
     start_sub_ = create_subscription<std_msgs::msg::Bool>(
@@ -111,7 +112,7 @@ private:
 
   void publish_voice(std::int32_t voice_id)//输出语音播报ID
   {
-    // 仅执行调度器批准的请求；ID 15、16 允许在非自动模式下发送。
+    // 仅执行调度器批准的请求；ID 14、15、16 允许在非自动模式下发送。
     // 其他语音的启用条件由场景选择和调度模块保证。
     std_msgs::msg::Int32 msg;
     msg.data = voice_id;
