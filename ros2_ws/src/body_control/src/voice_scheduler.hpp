@@ -6,6 +6,7 @@
 
 #include "voice_scene.hpp"
 #include "low_battery_voice.hpp"
+#include "cargo_voice.hpp"
 
 inline bool forward_voice_enabled(const VoiceSceneState & state)
 {
@@ -25,6 +26,7 @@ public:
   {
     // 即使有其他 P0 占用，也必须及时观察取消、启动及低电量反馈。
     low_battery_task_.observe(state, now);
+    cargo_task_.observe(state, now); // 先记录触发、取消和超时，不因高优先级返回而延后。
     const auto p0_id = select_voice_id(state);
     if (p0_id != active_p0_id_) {
       active_p0_id_ = p0_id;
@@ -110,7 +112,8 @@ public:
       pending_forward_due_.reset();
       return 7;
     }
-    return std::nullopt;
+    // P2：仅保证请求顺序；P1 实际音频播放排队由下游负责。
+    return cargo_task_.take_due(now);
   }
 
 private:
@@ -131,4 +134,5 @@ private:
   std::optional<TimePoint> next_remote_due_;
   std::optional<TimePoint> pending_remote_cycle_due_;
   LowBatteryVoiceTask low_battery_task_;
+  CargoVoiceTask cargo_task_;
 };

@@ -52,6 +52,21 @@ public:
         state_.veh_gear_st = msg->data;
         update_voice_scene();
       });
+    // 车辆到站停靠状态（false-未到站，true-停靠完成）。
+    arrive_sub_ = create_subscription<std_msgs::msg::Bool>(
+      "veh_arrive_st", rclcpp::QoS(1).best_effort(),
+      [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
+        state_.veh_arrive_st = msg->data;
+        update_voice_scene();
+      });
+    // 文档未定义，经用户授权暂定，名称、类型及取值待后续确认。
+    // 临时 EPB 接口：Bool，false-未拉起，true-已拉起；仅接收，不自动生成。
+    epb_sub_ = create_subscription<std_msgs::msg::Bool>(
+      "veh_epb_st", rclcpp::QoS(1).best_effort(),
+      [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
+        state_.veh_epb_st = msg->data;
+        update_voice_scene();
+      });
     // 障碍物检测状态（false-无，true-有）。
     obs_sub_ = create_subscription<std_msgs::msg::Bool>(
       "obs_detect_st", rclcpp::QoS(1).best_effort(),
@@ -119,7 +134,7 @@ private:
 
   void publish_voice(std::int32_t voice_id)//输出语音播报ID
   {
-    // 仅执行调度器批准的请求；ID 14、15、16 允许在非自动模式下发送。
+    // 仅执行调度器批准的请求；ID 3、14、15、16 允许在非自动模式下发送。
     // 其他语音的启用条件由场景选择和调度模块保证。
     std_msgs::msg::Int32 msg;
     msg.data = voice_id;
@@ -138,6 +153,8 @@ private:
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr start_sub_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr turn_sub_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr gear_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr arrive_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr epb_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr obs_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr battery_sub_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr alarm_sub_;
