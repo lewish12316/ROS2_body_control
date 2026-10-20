@@ -4,11 +4,12 @@
 
 struct VoiceSceneState
 {
-  std::int32_t veh_mode_st{0};// 文档已有整车模式状态：0-待机，1-自动，2-远程遥控。
+  std::int32_t veh_mode_st{0};// 文整车模式状态：0-待机，1-自动，2-远程遥控。
   bool auto_drive_enabled{false};//自动驾驶模式状态
   std::int32_t turn_state{0};//转弯状态（0-直行，1-左转，2-右转）
   std::int32_t veh_gear_st{0};//整车挡位信号：0-P，1-R，2-N，3-D。
   bool obs_detect_st{false};//障碍物检测状态：false-无，true-有。
+  bool battery_low_power_st{false};// 电池电量预警；由上游按 SOC<=20% 提供，节点不计算 SOC。
   std::int32_t alarm_diag_st{0};// 故障告警信号：0 正常、正数故障，负数不确认故障。
   bool running_state_received{false};//是否接收到过车辆行驶状态
   bool vehicle_running{true};//车辆行驶状态（0-静止，1-行驶中）

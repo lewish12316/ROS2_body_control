@@ -59,6 +59,13 @@ public:
         state_.obs_detect_st = msg->data;
         update_voice_scene();
       });
+    // 电池电量预警，由上游按 SOC<=20% 置 true，不新增 SOC 信号。
+    battery_sub_ = create_subscription<std_msgs::msg::Bool>(
+      "battery_low_power_st", rclcpp::QoS(1).best_effort(),
+      [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
+        state_.battery_low_power_st = msg->data;
+        update_voice_scene();
+      });
     // 故障警告状态：正数故障，0 正常。
     alarm_sub_ = create_subscription<std_msgs::msg::Int32>(
       "alarm_diag_st", rclcpp::QoS(1).best_effort(),
@@ -132,6 +139,7 @@ private:
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr turn_sub_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr gear_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr obs_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr battery_sub_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr alarm_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr running_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr pedestrian_sub_;

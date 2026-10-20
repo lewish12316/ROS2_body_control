@@ -5,6 +5,7 @@
 #include <optional>
 
 #include "voice_scene.hpp"
+#include "low_battery_voice.hpp"
 
 inline bool forward_voice_enabled(const VoiceSceneState & state)
 {
@@ -22,6 +23,8 @@ public:
 
   std::optional<std::int32_t> update(const VoiceSceneState & state, TimePoint now)
   {
+    // 即使有其他 P0 占用，也必须及时观察取消、启动及低电量反馈。
+    low_battery_task_.observe(state, now);
     const auto p0_id = select_voice_id(state);
     if (p0_id != active_p0_id_) {
       active_p0_id_ = p0_id;
@@ -90,6 +93,13 @@ public:
       }
       return std::nullopt;
     }
+    // 已有 P0 > 有限次数低电量任务 > P1；ID 17 不使用 5 秒无限循环。
+    if (const auto low_battery_id = low_battery_task_.take_due(now)) {
+      return low_battery_id;
+    }
+    if (low_battery_task_.active()) {
+      return std::nullopt; // 两次低电量请求间也不穿插 P1。
+    }
     if (pending_remote_entry_due_ || pending_remote_cycle_due_) {
       // 相同 ID 的切入和行驶首轮合并发送，不重复请求播放。
       pending_remote_entry_due_.reset();
@@ -120,4 +130,5 @@ private:
   std::optional<TimePoint> pending_remote_entry_due_;
   std::optional<TimePoint> next_remote_due_;
   std::optional<TimePoint> pending_remote_cycle_due_;
+  LowBatteryVoiceTask low_battery_task_;
 };
