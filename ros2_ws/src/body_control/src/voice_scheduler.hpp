@@ -8,6 +8,7 @@
 #include "low_battery_voice.hpp"
 #include "cargo_voice.hpp"
 #include "unlock_voice.hpp"
+#include "cargo_completion_voice.hpp"
 
 inline bool forward_voice_enabled(const VoiceSceneState & state)
 {
@@ -27,7 +28,8 @@ public:
   {
     low_battery_task_.observe(state, now);// 即使有其他 P0 占用，也必须及时观察取消、启动及低电量反馈。
     cargo_task_.observe(state, now); // 先记录触发、取消和超时，不因高优先级返回而延后。
-    unlock_task_.observe(state, now);
+    const bool unlocked = unlock_task_.observe(state, now);
+    cargo_completion_task_.observe(state, now, unlocked);
     
     const auto p0_id = select_voice_id(state);
     if (p0_id != active_p0_id_) {
@@ -105,6 +107,10 @@ public:
     if (low_battery_task_.active()) {
       return std::nullopt; // 两次低电量请求间也不穿插 P1。
     }
+    // ID 2 > ID 14 > ID 7；各请求保持原到期时间。
+    if (const auto completion_id = cargo_completion_task_.take_due(now)) {
+      return completion_id;
+    }
     if (pending_remote_entry_due_ || pending_remote_cycle_due_) {
       // 相同 ID 的切入和行驶首轮合并发送，不重复请求播放。
       pending_remote_entry_due_.reset();
@@ -143,4 +149,5 @@ private:
   LowBatteryVoiceTask low_battery_task_;
   CargoVoiceTask cargo_task_;
   UnlockVoiceTask unlock_task_;
+  CargoCompletionVoiceTask cargo_completion_task_;
 };
