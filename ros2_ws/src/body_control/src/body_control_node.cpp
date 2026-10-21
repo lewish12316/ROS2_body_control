@@ -134,7 +134,7 @@ private:
 
   void publish_voice(std::int32_t voice_id)//输出语音播报ID
   {
-    // 仅执行调度器批准的请求；ID 3、14、15、16 允许在非自动模式下发送。
+    // 仅执行调度器批准的请求；ID 3、4、14、15、16 允许在非自动模式下发送。
     // 其他语音的启用条件由场景选择和调度模块保证。
     std_msgs::msg::Int32 msg;
     msg.data = voice_id;

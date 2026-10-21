@@ -35,6 +35,7 @@ void test_input_order_and_missing_conditions()
       const auto request = scheduler.update(state, at((step + 1) * 100));
       if (step == 2) {assert(request == 3);} else {assert(!request);}
     }
+    assert(scheduler.update(state, at(350)) == 4);
     assert(!scheduler.update(state, at(10000)));
   } while (std::next_permutation(order.begin(), order.end()));
 
@@ -48,6 +49,7 @@ void test_input_order_and_missing_conditions()
     assert(!scheduler.update(state, at(15000))); // 条件未齐时尚未开始 10 秒计时。
     state = cargo_state();
     assert(scheduler.update(state, at(20000)) == 3);
+    assert(scheduler.update(state, at(20050)) == 4);
   }
 }
 
@@ -65,6 +67,7 @@ void test_boot_modes_and_once_per_arrival()
         request = scheduler.update(state, at(50));
       }
       assert(request == 3); // 无需先见到“未到站”或自动驾驶启动。
+      assert(scheduler.update(state, at(100)) == 4);
       assert(!scheduler.update(state, at(1000)));
       state.veh_gear_st = 3;
       assert(!scheduler.update(state, at(2000)));
@@ -78,6 +81,7 @@ void test_boot_modes_and_once_per_arrival()
       assert(!scheduler.update(state, at(6000)));
       state.veh_arrive_st = true;
       assert(scheduler.update(state, at(7000)) == 3);
+      assert(scheduler.update(state, at(7050)) == 4);
       assert(!scheduler.update(state, at(20000)));
     }
   }
@@ -112,12 +116,18 @@ void test_p0_priority_and_timeout_boundaries()
       state.pedestrian_crossing = false;
       state.turn_state = 0;
       const auto result = scheduler.update(state, at(clear_time));
-      if (clear_time < 10000) {assert(result == 3);} else {assert(!result);}
+      if (clear_time < 10000) {
+        assert(result == 3);
+        assert(scheduler.update(state, at(clear_time)) == 4); // 下一次调度可同刻发送。
+      } else {
+        assert(!result);
+      }
       assert(!scheduler.update(state, at(20000))); // 超时后也不能重新建立请求。
       state.veh_arrive_st = false;
       assert(!scheduler.update(state, at(21000)));
       state.veh_arrive_st = true;
       assert(scheduler.update(state, at(22000)) == 3);
+      assert(scheduler.update(state, at(22050)) == 4);
     }
   }
 }
@@ -143,6 +153,7 @@ void test_pending_cancel_and_no_retry_until_departure()
     assert(!scheduler.update(state, at(12000)));
     state.veh_arrive_st = true;
     assert(scheduler.update(state, at(13000)) == 3);
+    assert(scheduler.update(state, at(13050)) == 4);
   }
   VoiceScheduler scheduler;
   auto state = cargo_state();
@@ -156,6 +167,7 @@ void test_pending_cancel_and_no_retry_until_departure()
   assert(!scheduler.update(state, at(2000)));
   state.veh_arrive_st = true;
   assert(scheduler.update(state, at(3000)) == 3); // 离站后新到站可重新触发。
+  assert(scheduler.update(state, at(3050)) == 4);
 }
 
 void test_mode_and_button_changes_do_not_cancel()
@@ -177,6 +189,7 @@ void test_mode_and_button_changes_do_not_cancel()
   state.alarm_diag_st = 0;
   assert(scheduler.update(state, at(4000)) == 14);
   assert(scheduler.update(state, at(4050)) == 3); // 原 P2 请求仍有效。
+  assert(scheduler.update(state, at(4100)) == 4);
 }
 
 void test_p1_dispatch_and_original_timeout()
@@ -193,7 +206,12 @@ void test_p1_dispatch_and_original_timeout()
     assert(scheduler.update(state, at(clear_time)) == 14); // 待播 P1 先发。
     const int next_check = clear_time + 50;
     const auto result = scheduler.update(state, at(next_check));
-    if (next_check < 10000) {assert(result == 3);} else {assert(!result);}
+    if (next_check < 10000) {
+      assert(result == 3);
+      assert(scheduler.update(state, at(next_check + 50)) == 4);
+    } else {
+      assert(!result);
+    }
     assert(!scheduler.update(state, at(20000)));
   }
 
@@ -214,6 +232,7 @@ void test_p1_dispatch_and_original_timeout()
   assert(!scheduler.update(state, at(1000)));
   state.turn_state = 0;
   assert(scheduler.update(state, at(2000)) == 3);
+  assert(scheduler.update(state, at(2050)) == 4);
 }
 
 void test_low_battery_task_priority()
@@ -231,6 +250,7 @@ void test_low_battery_task_priority()
     if (cancel_battery) {
       state.battery_low_power_st = false;
       assert(scheduler.update(state, at(5000)) == 3);
+      assert(scheduler.update(state, at(5050)) == 4);
     } else {
       assert(!scheduler.update(state, at(9999)));
       assert(scheduler.update(state, at(10000)) == 17);
@@ -239,7 +259,83 @@ void test_low_battery_task_priority()
       assert(!scheduler.update(state, at(11000)));
       state.veh_arrive_st = true;
       assert(scheduler.update(state, at(12000)) == 3);
+      assert(scheduler.update(state, at(12050)) == 4);
     }
+  }
+}
+
+void test_id4_original_deadline_after_id3_sent()
+{
+  for (const int next_time : {9999, 10000, 10001}) {
+    VoiceScheduler scheduler;
+    auto state = cargo_state();
+    state.alarm_diag_st = 1;
+    state.running_state_received = true;
+    state.vehicle_running = false;
+    assert(scheduler.update(state, at(0)) == 16);
+    state.alarm_diag_st = 0;
+    assert(scheduler.update(state, at(9999)) == 3);
+    const auto result = scheduler.update(state, at(next_time));
+    if (next_time < 10000) {assert(result == 4);} else {assert(!result);}
+    assert(!scheduler.update(state, at(20000))); // 已发送的 ID 3 不得重复。
+    state.veh_epb_st = false;
+    assert(!scheduler.update(state, at(21000)));
+    state.veh_epb_st = true;
+    assert(!scheduler.update(state, at(22000))); // ID 4 超时后不能重开。
+  }
+}
+
+void test_id4_preemption_after_id3_sent()
+{
+  for (const int clear_time : {9000, 10000}) {
+    VoiceScheduler scheduler;
+    auto state = cargo_state();
+    assert(scheduler.update(state, at(0)) == 3);
+    state.alarm_diag_st = 1;
+    state.running_state_received = true;
+    state.vehicle_running = false;
+    assert(scheduler.update(state, at(1000)) == 16);
+    assert(!scheduler.update(state, at(2000)));
+    state.alarm_diag_st = 0;
+    const auto result = scheduler.update(state, at(clear_time));
+    if (clear_time < 10000) {assert(result == 4);} else {assert(!result);}
+    assert(!scheduler.update(state, at(15000)));
+  }
+
+  // ID 3 已发后，P1 仍可抢先；发送 P1 不延长 ID 4 原期限。
+  for (const int mode_change_time : {1000, 9999}) {
+    VoiceScheduler scheduler;
+    auto state = cargo_state();
+    assert(scheduler.update(state, at(0)) == 3);
+    state.veh_mode_st = 2;
+    assert(scheduler.update(state, at(mode_change_time)) == 14);
+    const auto result = scheduler.update(state, at(mode_change_time + 50));
+    if (mode_change_time + 50 < 10000) {assert(result == 4);} else {assert(!result);}
+    assert(!scheduler.update(state, at(20000)));
+  }
+}
+
+void test_id4_cancellation_after_id3_sent()
+{
+  for (int reason = 0; reason != 3; ++reason) {
+    VoiceScheduler scheduler;
+    auto state = cargo_state();
+    assert(scheduler.update(state, at(0)) == 3);
+    if (reason == 0) {state.veh_epb_st = false;}
+    if (reason == 1) {state.veh_gear_st = 3;}
+    if (reason == 2) {state.veh_arrive_st = false;}
+    assert(!scheduler.update(state, at(50)));
+    if (reason != 2) {
+      state.veh_epb_st = true;
+      state.veh_gear_st = 2;
+      assert(!scheduler.update(state, at(100))); // 恢复条件不能单独重试 ID 4。
+      state.veh_arrive_st = false;
+      assert(!scheduler.update(state, at(150)));
+    }
+    state.veh_arrive_st = true;
+    assert(scheduler.update(state, at(200)) == 3); // 新到站先从 ID 3 开始。
+    assert(scheduler.update(state, at(250)) == 4);
+    assert(!scheduler.update(state, at(300)));
   }
 }
 
@@ -252,5 +348,8 @@ int main()
   test_mode_and_button_changes_do_not_cancel();
   test_p1_dispatch_and_original_timeout();
   test_low_battery_task_priority();
+  test_id4_original_deadline_after_id3_sent();
+  test_id4_preemption_after_id3_sent();
+  test_id4_cancellation_after_id3_sent();
   std::cout << "Cargo voice checks passed\n";
 }
