@@ -6,6 +6,7 @@
 #include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/int32.hpp"
 #include "std_msgs/msg/float32.hpp"
+#include "std_msgs/msg/float64.hpp"
 #include "auto_drive.hpp"
 #include "voice_scene.hpp"
 #include "voice_scheduler.hpp"
@@ -123,6 +124,23 @@ public:
         state_.veh_speed_st = msg->data;
         update_voice_scene();
       });
+    // 文档未定义，经用户授权暂定，名称、类型及取值待后续确认。
+    // 临时等灯接口：Bool，true-正在等红绿灯，不以普通停车代替。
+    traffic_wait_sub_ = create_subscription<std_msgs::msg::Bool>(
+      "traffic_light_wait_st", rclcpp::QoS(1).best_effort(),
+      [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
+        state_.traffic_light_wait_st = msg->data;
+        update_voice_scene();
+      });
+    // 文档已有光照数值接口，单位未定义；非法数值由等待任务忽略。
+    // 阈值由用户暂定为5，待后续文档同步；文档未定义光照单位。
+    ambient_light_sub_ = create_subscription<std_msgs::msg::Float64>(
+      "ambient_light_level_st", rclcpp::QoS(1).best_effort(),
+      [this](std_msgs::msg::Float64::ConstSharedPtr msg) {
+        state_.ambient_light_received = true;
+        state_.ambient_light_level_st = msg->data;
+        update_voice_scene();
+      });
     //行人横穿检测状态。（0-未横穿，1-有）
     pedestrian_sub_ = create_subscription<std_msgs::msg::Bool>(
       "pedestrian_cross_st", rclcpp::QoS(1).best_effort(),
@@ -179,6 +197,8 @@ private:
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr alarm_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr running_sub_;
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr speed_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr traffic_wait_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr ambient_light_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr pedestrian_sub_;
   rclcpp::TimerBase::SharedPtr timer_;
 };

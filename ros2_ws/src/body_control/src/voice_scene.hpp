@@ -24,6 +24,10 @@ struct VoiceSceneState
   float veh_speed_st{0.0F};
   bool speed_state_received{false};// 内部接收标记，不是新增业务信号。
   bool pedestrian_crossing{false};//行人横穿检测状态（0-未横穿，1-有）
+  // 文档未定义，经用户授权暂定，名称、类型及取值待后续确认。
+  bool traffic_light_wait_st{false};// 临时 Bool 接口：true-正在等红绿灯。
+  double ambient_light_level_st{0.0};// 文档已有环境光照数值，单位未定义。
+  bool ambient_light_received{false};// 内部接收标记，未知光照不按夜间处理。
 };
 
 inline std::int32_t select_voice_id(const VoiceSceneState & state)
