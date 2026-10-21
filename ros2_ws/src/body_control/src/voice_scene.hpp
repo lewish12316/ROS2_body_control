@@ -19,6 +19,10 @@ struct VoiceSceneState
   std::int32_t alarm_diag_st{0};// 故障告警信号：0 正常、正数故障，负数不确认故障。
   bool running_state_received{false};//是否接收到过车辆行驶状态
   bool vehicle_running{true};//车辆行驶状态（0-静止，1-行驶中）
+  // 文档未定义，经用户授权暂定，名称、类型及单位待后续确认。
+  // 临时车速接口：std_msgs/msg/Float32，单位 km/h；初值不作为已接收车速。
+  float veh_speed_st{0.0F};
+  bool speed_state_received{false};// 内部接收标记，不是新增业务信号。
   bool pedestrian_crossing{false};//行人横穿检测状态（0-未横穿，1-有）
 };
 

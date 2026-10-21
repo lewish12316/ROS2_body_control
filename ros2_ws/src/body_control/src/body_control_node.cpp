@@ -5,6 +5,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/int32.hpp"
+#include "std_msgs/msg/float32.hpp"
 #include "auto_drive.hpp"
 #include "voice_scene.hpp"
 #include "voice_scheduler.hpp"
@@ -113,6 +114,15 @@ public:
         state_.vehicle_running = msg->data;
         update_voice_scene();
       });
+    // 文档未定义，经用户授权暂定，名称、类型及单位待后续确认。
+    // 临时车速接口：Float32，km/h；保留最新原始反馈，非法值由起步任务视为未知。
+    speed_sub_ = create_subscription<std_msgs::msg::Float32>(
+      "veh_speed_st", rclcpp::QoS(1).best_effort(),
+      [this](std_msgs::msg::Float32::ConstSharedPtr msg) {
+        state_.speed_state_received = true;
+        state_.veh_speed_st = msg->data;
+        update_voice_scene();
+      });
     //行人横穿检测状态。（0-未横穿，1-有）
     pedestrian_sub_ = create_subscription<std_msgs::msg::Bool>(
       "pedestrian_cross_st", rclcpp::QoS(1).best_effort(),
@@ -168,6 +178,7 @@ private:
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr battery_sub_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr alarm_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr running_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr speed_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr pedestrian_sub_;
   rclcpp::TimerBase::SharedPtr timer_;
 };

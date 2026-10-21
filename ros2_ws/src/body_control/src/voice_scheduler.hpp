@@ -10,6 +10,7 @@
 #include "unlock_voice.hpp"
 #include "cargo_completion_voice.hpp"
 #include "door_open_voice.hpp"
+#include "start_voice.hpp"
 
 inline bool forward_voice_enabled(const VoiceSceneState & state)
 {
@@ -32,6 +33,7 @@ public:
     const bool unlocked = unlock_task_.observe(state, now);
     cargo_completion_task_.observe(state, now, unlocked);
     door_open_task_.observe(state, now);
+    start_task_.observe(state, now);
     
     const auto p0_id = select_voice_id(state);
     if (p0_id != active_p0_id_) {
@@ -102,6 +104,7 @@ public:
       }
       return std::nullopt;
     }
+    
     // 已有 P0 > 有限次数低电量任务 > P1；ID 17 不使用 5 秒无限循环。
     if (const auto low_battery_id = low_battery_task_.take_due(now)) {
       return low_battery_id;
@@ -109,9 +112,13 @@ public:
     if (low_battery_task_.active()) {
       return std::nullopt; // 两次低电量请求间也不穿插 P1。
     }
-    // P1 顺序：ID 1 > ID 2 > ID 14 > ID 7；各请求保持原到期时间。
+
+    // P1 顺序：ID 1 > ID 6 > ID 2 > ID 14 > ID 7；各请求保持原到期时间。
     if (const auto door_open_id = door_open_task_.take_due(now)) {
       return door_open_id;
+    }
+    if (const auto start_id = start_task_.take_due(now)) {
+      return start_id;
     }
     if (const auto completion_id = cargo_completion_task_.take_due(now)) {
       return completion_id;
@@ -126,6 +133,7 @@ public:
       pending_forward_due_.reset();
       return 7;
     }
+
     // P2：仅保证请求顺序；P1 实际音频播放排队由下游负责。
     // ID 5 的 3 秒期限较短，优先于 ID 3、4，不改变各自期限。
     if (const auto unlock_id = unlock_task_.take_due(now)) {
@@ -156,4 +164,5 @@ private:
   UnlockVoiceTask unlock_task_;
   CargoCompletionVoiceTask cargo_completion_task_;
   DoorOpenVoiceTask door_open_task_;
+  StartVoiceTask start_task_;
 };
