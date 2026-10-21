@@ -139,9 +139,12 @@ void test_low_battery_blocking_and_timeout()
     assert(scheduler.update(state, at(low_start)) == 17);
     assert(!scheduler.update(state, at(low_start + 5000)));
     assert(scheduler.update(state, at(low_start + 10000)) == 17);
-    const auto result = scheduler.update(state, at(low_start + 10050));
+    // 新增 ID 1 已到期，先于 ID 2，但不得延长 ID 2 的原期限。
+    assert(scheduler.update(state, at(low_start + 10050)) == 1);
+    const auto result = scheduler.update(state, at(low_start + 10100));
     if (low_start + 10050 < 71000) {assert(result == 2);} else {assert(!result);}
-    assert(scheduler.update(state, at(121000)) == 2);
+    assert(scheduler.update(state, at(121000)) == 1);
+    assert(scheduler.update(state, at(121050)) == 2);
   }
 }
 
@@ -269,11 +272,15 @@ void test_p1_priority_and_original_deadlines()
   state.trunk_lock_st = false;
   assert(forward.update(state, at(1000)) == 7);
   assert(forward.update(state, at(1050)) == 5);
-  assert(forward.update(state, at(61000)) == 2);
-  assert(forward.update(state, at(121000)) == 2);
-  assert(forward.update(state, at(121050)) == 7);
-  assert(forward.update(state, at(181000)) == 2);
-  assert(forward.update(state, at(241000)) == 7); // 没有第四轮 ID 2。
+  assert(forward.update(state, at(61000)) == 1);
+  assert(forward.update(state, at(61050)) == 2);
+  assert(forward.update(state, at(121000)) == 1);
+  assert(forward.update(state, at(121050)) == 2);
+  assert(forward.update(state, at(121100)) == 7);
+  assert(forward.update(state, at(181000)) == 1);
+  assert(forward.update(state, at(181050)) == 2);
+  assert(forward.update(state, at(241000)) == 1);
+  assert(forward.update(state, at(241050)) == 7); // 没有第四轮 ID 2。
 }
 
 void test_delayed_checks_skip_expired_rounds()

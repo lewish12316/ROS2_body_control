@@ -22,7 +22,7 @@ public:
     ad_mode_pub_ = create_publisher<std_msgs::msg::Bool>("ad_mode_req", 10);
 
 
-    // 50ms 检查调度：P0 5 秒，自动前进 120 秒，远程/遥控行驶 60 秒。
+    // 50ms 检查独立调度：P0 5 秒、箱门 10 秒、自动前进 120 秒、遥控行驶 60 秒等。
     timer_ = create_wall_timer(50ms, [this]() { update_voice_scene(); });
 
 

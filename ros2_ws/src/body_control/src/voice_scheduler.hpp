@@ -9,6 +9,7 @@
 #include "cargo_voice.hpp"
 #include "unlock_voice.hpp"
 #include "cargo_completion_voice.hpp"
+#include "door_open_voice.hpp"
 
 inline bool forward_voice_enabled(const VoiceSceneState & state)
 {
@@ -30,6 +31,7 @@ public:
     cargo_task_.observe(state, now); // 先记录触发、取消和超时，不因高优先级返回而延后。
     const bool unlocked = unlock_task_.observe(state, now);
     cargo_completion_task_.observe(state, now, unlocked);
+    door_open_task_.observe(state, now);
     
     const auto p0_id = select_voice_id(state);
     if (p0_id != active_p0_id_) {
@@ -107,7 +109,10 @@ public:
     if (low_battery_task_.active()) {
       return std::nullopt; // 两次低电量请求间也不穿插 P1。
     }
-    // ID 2 > ID 14 > ID 7；各请求保持原到期时间。
+    // P1 顺序：ID 1 > ID 2 > ID 14 > ID 7；各请求保持原到期时间。
+    if (const auto door_open_id = door_open_task_.take_due(now)) {
+      return door_open_id;
+    }
     if (const auto completion_id = cargo_completion_task_.take_due(now)) {
       return completion_id;
     }
@@ -150,4 +155,5 @@ private:
   CargoVoiceTask cargo_task_;
   UnlockVoiceTask unlock_task_;
   CargoCompletionVoiceTask cargo_completion_task_;
+  DoorOpenVoiceTask door_open_task_;
 };
