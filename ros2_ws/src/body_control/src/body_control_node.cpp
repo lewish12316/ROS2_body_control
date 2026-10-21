@@ -67,6 +67,14 @@ public:
         state_.veh_epb_st = msg->data;
         update_voice_scene();
       });
+    // 货箱门锁状态：false-未锁，true-上锁；不是开锁控制指令。
+    trunk_lock_sub_ = create_subscription<std_msgs::msg::Bool>(
+      "trunk_lock_st", rclcpp::QoS(1).best_effort(),
+      [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
+        state_.trunk_lock_state_received = true;
+        state_.trunk_lock_st = msg->data;
+        update_voice_scene();
+      });
     // 障碍物检测状态（false-无，true-有）。
     obs_sub_ = create_subscription<std_msgs::msg::Bool>(
       "obs_detect_st", rclcpp::QoS(1).best_effort(),
@@ -134,7 +142,7 @@ private:
 
   void publish_voice(std::int32_t voice_id)//输出语音播报ID
   {
-    // 仅执行调度器批准的请求；ID 3、4、14、15、16 允许在非自动模式下发送。
+    // 仅执行调度器批准的请求；ID 3、4、5、14、15、16 允许在非自动模式下发送。
     // 其他语音的启用条件由场景选择和调度模块保证。
     std_msgs::msg::Int32 msg;
     msg.data = voice_id;
@@ -155,6 +163,7 @@ private:
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr gear_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr arrive_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr epb_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr trunk_lock_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr obs_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr battery_sub_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr alarm_sub_;

@@ -12,6 +12,8 @@ struct VoiceSceneState
   // 文档未定义，经用户授权暂定，名称、类型及取值待后续确认。
   // 临时 EPB 接口：std_msgs/msg/Bool，false-未拉起，true-已拉起。
   bool veh_epb_st{false};
+  bool trunk_lock_st{false};// 货箱门锁状态：false-未锁，true-上锁。
+  bool trunk_lock_state_received{false};// 内部接收标记，不是新增业务信号。
   bool obs_detect_st{false};//障碍物检测状态：false-无，true-有。
   bool battery_low_power_st{false};// 电池电量预警；由上游按 SOC<=20% 提供，节点不计算 SOC。
   std::int32_t alarm_diag_st{0};// 故障告警信号：0 正常、正数故障，负数不确认故障。

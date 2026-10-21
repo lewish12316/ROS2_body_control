@@ -7,6 +7,7 @@
 #include "voice_scene.hpp"
 #include "low_battery_voice.hpp"
 #include "cargo_voice.hpp"
+#include "unlock_voice.hpp"
 
 inline bool forward_voice_enabled(const VoiceSceneState & state)
 {
@@ -24,14 +25,16 @@ public:
 
   std::optional<std::int32_t> update(const VoiceSceneState & state, TimePoint now)
   {
-    // 即使有其他 P0 占用，也必须及时观察取消、启动及低电量反馈。
-    low_battery_task_.observe(state, now);
+    low_battery_task_.observe(state, now);// 即使有其他 P0 占用，也必须及时观察取消、启动及低电量反馈。
     cargo_task_.observe(state, now); // 先记录触发、取消和超时，不因高优先级返回而延后。
+    unlock_task_.observe(state, now);
+    
     const auto p0_id = select_voice_id(state);
     if (p0_id != active_p0_id_) {
       active_p0_id_ = p0_id;
       next_p0_due_ = p0_id != 0 ? std::optional<TimePoint>(now) : std::nullopt;
     }
+
     //自动驾驶前进场景的超时处理
     const bool forward_enabled = forward_voice_enabled(state);
     if (!forward_enabled) {
@@ -113,6 +116,10 @@ public:
       return 7;
     }
     // P2：仅保证请求顺序；P1 实际音频播放排队由下游负责。
+    // ID 5 的 3 秒期限较短，优先于 ID 3、4，不改变各自期限。
+    if (const auto unlock_id = unlock_task_.take_due(now)) {
+      return unlock_id;
+    }
     return cargo_task_.take_due(now);
   }
 
@@ -135,4 +142,5 @@ private:
   std::optional<TimePoint> pending_remote_cycle_due_;
   LowBatteryVoiceTask low_battery_task_;
   CargoVoiceTask cargo_task_;
+  UnlockVoiceTask unlock_task_;
 };
