@@ -22,22 +22,33 @@ public:
     voice_pub_ = create_publisher<std_msgs::msg::Int32>("voice_broadcast_id", 10);
     // 发布自动驾驶模式状态请求。
     ad_mode_pub_ = create_publisher<std_msgs::msg::Bool>("ad_mode_req", 10);
-    // 文档已有倒车灯请求：true-开启，false-关闭；仅复用已有挡位信号。
+    // 倒车灯请求：true-开启，false-关闭；仅复用已有挡位信号。
     reverse_light_pub_ = create_publisher<std_msgs::msg::Bool>("reverse_light_req", rclcpp::QoS(1).reliable());
     publish_reverse_light_request(); // 未收到挡位时，默认关闭。
-    // 文档已有转向灯请求：0-关闭，1-左转向，2-右转向。
-    turn_light_pub_ = create_publisher<std_msgs::msg::Int32>(
-      "turn_light_req", rclcpp::QoS(1).reliable());
+    // 转向灯请求：0-关闭，1-左转向，2-右转向。
+    turn_light_pub_ = create_publisher<std_msgs::msg::Int32>("turn_light_req", rclcpp::QoS(1).reliable());
     publish_turn_light_request();
+    // 制动灯请求，下游同步控制制动灯和高位制动灯。
+    brake_light_pub_ = create_publisher<std_msgs::msg::Bool>("brake_light_req", rclcpp::QoS(1).reliable());
+    publish_brake_light_request(); // 尚未收到制动状态，默认关闭。
 
 
     // 50ms 检查独立调度：P0 5 秒、箱门 10 秒、自动前进 120 秒、遥控行驶 60 秒等。
     timer_ = create_wall_timer(50ms, [this]() {
       publish_reverse_light_request();
       publish_turn_light_request();
+      publish_brake_light_request();
       update_voice_scene();
     });
 
+
+    // 文档已有车辆制动状态：false-解除，true-生效。
+    brake_sub_ = create_subscription<std_msgs::msg::Bool>(
+      "veh_brake_st", rclcpp::QoS(1).best_effort(),
+      [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
+        veh_brake_st_ = msg->data;
+        publish_brake_light_request(); // 立即更新，不等待周期或语音调度。
+      });
 
     //整车模式状态（0-待机，1-自动驾驶，2-远程遥控）
     mode_sub_ = create_subscription<std_msgs::msg::Int32>(
@@ -166,6 +177,16 @@ public:
   }
 
 private:
+  void publish_brake_light_request()
+  {
+    std_msgs::msg::Bool msg;
+    // 用户确认：解除即熄灭，包括仍在行驶时，不额外要求车辆静止。
+    // 上游在减速、驻车、坡道驻车和紧急制动需要亮灯期间持续提供true。
+    // 不合并EPB、不从车速推断制动，不受模式、启动按钮或语音影响。
+    msg.data = veh_brake_st_;
+    brake_light_pub_->publish(msg);
+  }
+
   void publish_turn_light_request()
   {
     std_msgs::msg::Int32 msg;
@@ -218,11 +239,14 @@ private:
   VoiceSceneState state_;
   AutoDriveGate auto_drive_;
   VoiceScheduler scheduler_;
+  bool veh_brake_st_{false}; // 文档已有veh_brake_st的缓存；通信中断保留最后状态。
 
   rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr voice_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr ad_mode_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr reverse_light_pub_;
   rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr turn_light_pub_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr brake_light_pub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr brake_sub_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr mode_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr start_sub_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr turn_sub_;
