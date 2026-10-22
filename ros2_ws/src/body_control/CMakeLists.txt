@@ -27,6 +27,10 @@ if(BUILD_TESTING)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/reverse_light_test.py
       $<TARGET_FILE:body_control_node>)
   set_tests_properties(reverse_light_test PROPERTIES TIMEOUT 45)
+  add_test(NAME turn_light_test
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/turn_light_test.py
+      $<TARGET_FILE:body_control_node>)
+  set_tests_properties(turn_light_test PROPERTIES TIMEOUT 45)
   add_executable(voice_scene_test test/voice_scene_test.cpp)
   target_compile_features(voice_scene_test PUBLIC cxx_std_17)
   target_compile_options(voice_scene_test PRIVATE -UNDEBUG)

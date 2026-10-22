@@ -25,11 +25,16 @@ public:
     // 文档已有倒车灯请求：true-开启，false-关闭；仅复用已有挡位信号。
     reverse_light_pub_ = create_publisher<std_msgs::msg::Bool>("reverse_light_req", rclcpp::QoS(1).reliable());
     publish_reverse_light_request(); // 未收到挡位时，默认关闭。
+    // 文档已有转向灯请求：0-关闭，1-左转向，2-右转向。
+    turn_light_pub_ = create_publisher<std_msgs::msg::Int32>(
+      "turn_light_req", rclcpp::QoS(1).reliable());
+    publish_turn_light_request();
 
 
     // 50ms 检查独立调度：P0 5 秒、箱门 10 秒、自动前进 120 秒、遥控行驶 60 秒等。
     timer_ = create_wall_timer(50ms, [this]() {
       publish_reverse_light_request();
+      publish_turn_light_request();
       update_voice_scene();
     });
 
@@ -39,6 +44,7 @@ public:
       "veh_mode_st", rclcpp::QoS(1).best_effort(),
       [this](std_msgs::msg::Int32::ConstSharedPtr msg) {
         state_.veh_mode_st = msg->data; // 保存已有模式信号，供 ID 14 调度使用。
+        publish_turn_light_request(); // 模式变化立即更新灯光，不等待语音调度。
         if (auto_drive_.set_mode(msg->data)) {
           publish_ad_mode_request();
         }
@@ -112,6 +118,7 @@ public:
       [this](std_msgs::msg::Int32::ConstSharedPtr msg) {
         state_.turn_state =
           (msg->data == 1 || msg->data == 2) ? msg->data : 0;
+        publish_turn_light_request();
         update_voice_scene();
       });
     //接受车辆行驶状态。（0-静止，1-行驶中）
@@ -159,6 +166,18 @@ public:
   }
 
 private:
+  void publish_turn_light_request()
+  {
+    std_msgs::msg::Int32 msg;
+    // 用户确认的近似：仅使用已有转弯状态，不能保证提前1秒开启，
+    // 不能独立确认人工转向指令或车身回正；直行/非法值按关闭处理。
+    // 自动和遥控模式均不依赖启动按钮、行驶状态或语音优先级。
+    msg.data = (state_.veh_mode_st == 1 || state_.veh_mode_st == 2) &&
+      (state_.turn_state == 1 || state_.turn_state == 2) ? state_.turn_state : 0;
+    // 持续请求方向，由下游BCM/灯控执行闪烁；本节点不交替发送方向和0。
+    turn_light_pub_->publish(msg);
+  }
+
   void publish_reverse_light_request()
   {
     std_msgs::msg::Bool msg;
@@ -203,6 +222,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr voice_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr ad_mode_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr reverse_light_pub_;
+  rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr turn_light_pub_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr mode_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr start_sub_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr turn_sub_;
