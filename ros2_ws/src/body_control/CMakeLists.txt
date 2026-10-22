@@ -35,6 +35,14 @@ if(BUILD_TESTING)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/brake_light_test.py
       $<TARGET_FILE:body_control_node>)
   set_tests_properties(brake_light_test PROPERTIES TIMEOUT 45)
+  add_executable(hazard_light_test test/hazard_light_test.cpp)
+  target_compile_features(hazard_light_test PUBLIC cxx_std_17)
+  target_compile_options(hazard_light_test PRIVATE -UNDEBUG -Wall -Wextra -Wpedantic)
+  add_test(NAME hazard_light_test COMMAND hazard_light_test)
+  add_test(NAME hazard_light_ros_test
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/hazard_light_ros_test.py
+      $<TARGET_FILE:body_control_node>)
+  set_tests_properties(hazard_light_ros_test PROPERTIES TIMEOUT 75)
   add_executable(voice_scene_test test/voice_scene_test.cpp)
   target_compile_features(voice_scene_test PUBLIC cxx_std_17)
   target_compile_options(voice_scene_test PRIVATE -UNDEBUG)

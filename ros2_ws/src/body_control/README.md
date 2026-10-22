@@ -1,6 +1,6 @@
 # 车身控制节点
 
-`body_control_node` 实现制动灯/高位制动灯、转向灯和倒车灯控制请求、自动驾驶启动请求，以及等红绿灯、车辆起步、箱门未关闭、装卸货完成确认、开锁成功、装卸货和关闭箱门提醒、低电量、远程/遥控驾驶、行驶故障、故障停车、自动驾驶前进、障碍物、左右转、倒车、行人礼让语音请求。节点不负责底盘模式仲裁、门锁控制、路径绕行、靠边停车、刹车或播放音频。
+`body_control_node` 实现危险警报灯、制动灯/高位制动灯、转向灯和倒车灯控制请求、自动驾驶启动请求，以及等红绿灯、车辆起步、箱门未关闭、装卸货完成确认、开锁成功、装卸货和关闭箱门提醒、低电量、远程/遥控驾驶、行驶故障、故障停车、自动驾驶前进、障碍物、左右转、倒车、行人礼让语音请求。节点不负责底盘模式仲裁、门锁控制、路径绕行、靠边停车、刹车或播放音频。
 
 ## 输入和输出
 
@@ -21,11 +21,14 @@
 | 输入 | `/veh_speed_st` | `std_msgs/msg/Float32` | 临时授权车速接口，单位 km/h；名称、类型及单位待确认 |
 | 输入 | `/veh_running_st` | `std_msgs/msg/Bool` | false 静止、true 行驶 |
 | 输入 | `/veh_brake_st` | `std_msgs/msg/Bool` | 文档已有车辆制动状态：false 解除、true 生效 |
+| 输入 | `/emergency_stop_st` | `std_msgs/msg/Bool` | 文档未定义，经用户授权暂定：false 解除、true 急停有效，默认 false |
+| 输入 | `/mode_transition_abnormal_st` | `std_msgs/msg/Bool` | 文档未定义，经用户授权暂定：false 解除、true 模式异常切换有效，默认 false |
 | 输入 | `/pedestrian_cross_st` | `std_msgs/msg/Bool` | true 检测到行人横穿 |
 | 输出 | `/ad_mode_req` | `std_msgs/msg/Bool` | true 自动驾驶模式请求、false 退出请求 |
 | 输出 | `/reverse_light_req` | `std_msgs/msg/Bool` | 文档已有倒车灯请求：false 关闭、true 开启 |
 | 输出 | `/turn_light_req` | `std_msgs/msg/Int32` | 文档已有转向灯请求：0 关闭、1 左转向、2 右转向；下游执行闪烁 |
 | 输出 | `/brake_light_req` | `std_msgs/msg/Bool` | 文档已有制动灯请求：false 关闭、true 开启；下游同步控制制动灯和高位制动灯 |
+| 输出 | `/hazard_light_req` | `std_msgs/msg/Bool` | 文档已有危险警报灯请求：false 关闭、true 请求双侧同步高频闪烁 |
 | 输出 | `/voice_broadcast_id` | `std_msgs/msg/Int32` | 1 箱门未关闭、2 装卸货完成确认、3 装卸货、4 提醒关闭箱门、5 开锁成功、6 车辆起步、7 自动驾驶前进、8 障碍物、9 右转、10 左转、11 行人礼让、12 倒车、13 等红绿灯、14 远程/遥控驾驶、15 行驶故障、16 故障停车、17 低电量 |
 
 规范中 `ad_mode_req` 是 0/1 枚举，本示例按当前需求用 Bool 承载 false/true。接入实际车辆时需和接收端约定一致的消息类型。
@@ -264,6 +267,59 @@ ros2 topic pub --once /veh_brake_st std_msgs/msg/Bool "{data: false}"
 无需发送模式或启动按钮。测试时应没有其他程序发布同名输入。保持制动状态 true 可验证持续点亮请求；EPB 拉起本身不会点亮制动灯。
 
 启用 `BUILD_TESTING=ON` 编译后，运行前述 `colcon test` 命令。新增 `brake_light_test` 在独立命名空间启动实际节点，覆盖默认关闭、制动开启/解除、重复输入、缓存保持、50ms 刷新及模式/启动/行驶/挡位/EPB/故障组合；检查输入 best_effort 和输出 reliable、volatile QoS。只对输出实际改变的事件测量输入发送到请求接收耗时，要求本机测试不超过 100ms；该耗时包含双向传输，不代表最坏调度或硬件实灯响应保证。原有灯光和语音测试一并回归。
+
+## 危险警报灯控制
+
+以下六类条件任一成立即持续请求双闪，全部解除才关闭，不锁存、不依赖启动按钮：
+
+| 场景 | 判定条件 |
+| --- | --- |
+| 急停 | `emergency_stop_st=true` |
+| 系统故障驻车 | `alarm_diag_st>0` 且已确认静止 |
+| 长时间遇障等待 | `obs_detect_st=true` 且已确认静止，连续满 30 秒 |
+| 遥控接管 | `veh_mode_st=2`，包括静止和未按启动按钮 |
+| 模式异常切换 | `mode_transition_abnormal_st=true` |
+| 低电量停靠 | `battery_low_power_st=true` 且已确认静止 |
+
+“已确认静止”须收到过 `veh_running_st=false`；未知状态不按静止处理，故障值 0 或负数不触发故障驻车。其他场景不限制模式，遥控模式退出只解除遥控原因，不能覆盖仍有效的急停等原因。
+
+**文档未定义，经用户授权暂定：`emergency_stop_st` 和 `mode_transition_abnormal_st` 均为 Bool 输入，默认 false。** true 分别表示急停有效、模式异常切换有效，false 表示解除，由上游负责置位和解除；声明、订阅处保留授权标识。普通制动不是急停，未知模式值和普通模式切换也不自动视为异常。
+
+**用户确认的近似：故障静止、遇障静止和低电量静止不能证明停车原因、靠边位置或实际驻车动作。** 不从 EPB 或到站信号推断这些场景。
+
+**文档未规定遇障时长，经用户确认暂定 30 秒。** 从障碍物与已确认静止条件同时成立的本节点处理时刻，以单调时钟计时；重复消息、模式切换或其他双闪原因不会重置计时。障碍物消失或开始行驶立即清零，重新满足后重新计时。内部计时起点及有效性标记不作为业务接口发布；通信中断保留缓存，不增加超时规则。
+
+相关状态回调立即更新请求，先于语音调度；复用 50ms 定时器检查遇障期限并刷新输出，初始化为 false。两个新增输入采用 best_effort、深度 1，输出采用 reliable、深度 1、volatile。
+
+**下游 BCM 负责双侧同步高频闪烁和双闪优先仲裁。** 节点持续输出 true，不交替输出明暗，不改变 `turn_light_req`；双闪有效时下游覆盖单侧转向，解除后按当前转向请求恢复。不同话题间不保证到达顺序。本次不新增扬声器故障、灯具诊断或车辆停车控制功能；频率、同步、仲裁及硬件响应需台架验收。
+
+### 危险警报灯验证
+
+编译运行节点后，在另一个已加载 ROS 环境的终端观察：
+
+```bash
+ros2 topic echo /hazard_light_req
+```
+
+在第三个已加载 ROS 环境的终端逐条执行，预期急停开启为 true，叠加异常后仍为 true，解除急停后仍为 true，最后解除异常才为 false：
+
+```bash
+ros2 topic pub --once /emergency_stop_st std_msgs/msg/Bool "{data: true}"
+ros2 topic pub --once /mode_transition_abnormal_st std_msgs/msg/Bool "{data: true}"
+ros2 topic pub --once /emergency_stop_st std_msgs/msg/Bool "{data: false}"
+ros2 topic pub --once /mode_transition_abnormal_st std_msgs/msg/Bool "{data: false}"
+```
+
+确认其他原因均已解除、没有其他程序发布同名输入，再发送以下消息：预期立即仍为 false，连续等待满 30 秒后由定时器自动变为 true；障碍物消失后立即 false。开始行驶也会清零计时。
+
+```bash
+ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: false}"
+ros2 topic pub --once /obs_detect_st std_msgs/msg/Bool "{data: true}"
+# 等待30秒，再清除障碍物。
+ros2 topic pub --once /obs_detect_st std_msgs/msg/Bool "{data: false}"
+```
+
+自动测试沿用前述 `colcon test` 命令。`hazard_light_test` 使用可控时间覆盖 29999/30000ms 边界、重复输入、中断重计时、迟到检查、全部 64 种原因组合及逐项解除。`hazard_light_ros_test` 启动实际节点验证新接口及 QoS、周期刷新、即时触发响应、真实 30 秒到期、未知行驶状态、遥控静止保持、启动按钮无关性和单侧转向请求保留。仅对即时输出变化测量收发耗时并要求本机不超过 100ms，不代表最坏调度或实灯响应保证；其他灯光和语音测试一并回归。
 
 ## 编译和运行
 

@@ -10,6 +10,7 @@
 #include "auto_drive.hpp"
 #include "voice_scene.hpp"
 #include "voice_scheduler.hpp"
+#include "hazard_light.hpp"
 
 using namespace std::chrono_literals;
 
@@ -31,6 +32,9 @@ public:
     // 制动灯请求，下游同步控制制动灯和高位制动灯。
     brake_light_pub_ = create_publisher<std_msgs::msg::Bool>("brake_light_req", rclcpp::QoS(1).reliable());
     publish_brake_light_request(); // 尚未收到制动状态，默认关闭。
+    // 危险警报灯请求；下游负责双侧同步高频闪烁及双闪优先仲裁。
+    hazard_light_pub_ = create_publisher<std_msgs::msg::Bool>("hazard_light_req", rclcpp::QoS(1).reliable());
+    publish_hazard_light_request();
 
 
     // 50ms 检查独立调度：P0 5 秒、箱门 10 秒、自动前进 120 秒、遥控行驶 60 秒等。
@@ -38,9 +42,25 @@ public:
       publish_reverse_light_request();
       publish_turn_light_request();
       publish_brake_light_request();
+      publish_hazard_light_request();
       update_voice_scene();
     });
 
+
+    // 文档未定义，暂定：emergency_stop_st，Bool，false-解除，true-急停有效。
+    emergency_stop_sub_ = create_subscription<std_msgs::msg::Bool>(
+      "emergency_stop_st", rclcpp::QoS(1).best_effort(),
+      [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
+        emergency_stop_st_ = msg->data;
+        publish_hazard_light_request();
+      });
+    // 文档未定义，暂定：mode_transition_abnormal_st，Bool，false-解除，true-模式异常切换有效。
+    mode_abnormal_sub_ = create_subscription<std_msgs::msg::Bool>(
+      "mode_transition_abnormal_st", rclcpp::QoS(1).best_effort(),
+      [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
+        mode_transition_abnormal_st_ = msg->data;
+        publish_hazard_light_request();
+      });
 
     // 文档已有车辆制动状态：false-解除，true-生效。
     brake_sub_ = create_subscription<std_msgs::msg::Bool>(
@@ -55,6 +75,7 @@ public:
       "veh_mode_st", rclcpp::QoS(1).best_effort(),
       [this](std_msgs::msg::Int32::ConstSharedPtr msg) {
         state_.veh_mode_st = msg->data; // 保存已有模式信号，供 ID 14 调度使用。
+        publish_hazard_light_request();
         publish_turn_light_request(); // 模式变化立即更新灯光，不等待语音调度。
         if (auto_drive_.set_mode(msg->data)) {
           publish_ad_mode_request();
@@ -106,6 +127,7 @@ public:
       "obs_detect_st", rclcpp::QoS(1).best_effort(),
       [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
         state_.obs_detect_st = msg->data;
+        publish_hazard_light_request();
         update_voice_scene();
       });
     // 电池电量预警，由上游按 SOC<=20% 置 true，不新增 SOC 信号。
@@ -113,6 +135,7 @@ public:
       "battery_low_power_st", rclcpp::QoS(1).best_effort(),
       [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
         state_.battery_low_power_st = msg->data;
+        publish_hazard_light_request();
         update_voice_scene();
       });
     // 故障警告状态：正数故障，0 正常。
@@ -120,6 +143,7 @@ public:
       "alarm_diag_st", rclcpp::QoS(1).best_effort(),
       [this](std_msgs::msg::Int32::ConstSharedPtr msg) {
         state_.alarm_diag_st = msg->data;
+        publish_hazard_light_request();
         update_voice_scene();
       });
     // 接收转弯状态。（0-直行，1-左转，2-右转）
@@ -138,9 +162,10 @@ public:
       [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
         state_.running_state_received = true;
         state_.vehicle_running = msg->data;
+        publish_hazard_light_request();
         update_voice_scene();
       });
-    // 文档未定义，经用户授权暂定，名称、类型及单位待后续确认。
+    // 文档未定义，暂定，名称、类型及单位待后续确认。
     // 临时车速接口：Float32，km/h；每条消息更新内部序号，供 ID 6 识别起步后新反馈。
     speed_sub_ = create_subscription<std_msgs::msg::Float32>(
       "veh_speed_st", rclcpp::QoS(1).best_effort(),
@@ -150,7 +175,7 @@ public:
         ++state_.speed_feedback_seq; // 数值相同或非法也递增；序号不作为业务接口发布。
         update_voice_scene();
       });
-    // 文档未定义，经用户授权暂定，名称、类型及取值待后续确认。
+    // 文档未定义，暂定，名称、类型及取值待后续确认。
     // 临时等灯接口：Bool，true-正在等红绿灯，不以普通停车代替。
     traffic_wait_sub_ = create_subscription<std_msgs::msg::Bool>(
       "traffic_light_wait_st", rclcpp::QoS(1).best_effort(),
@@ -177,6 +202,15 @@ public:
   }
 
 private:
+  void publish_hazard_light_request()
+  {
+    std_msgs::msg::Bool msg;
+    msg.data = hazard_light_.update(
+      state_, emergency_stop_st_, mode_transition_abnormal_st_, HazardLightControl::Clock::now());
+    // 持续true请求双闪，不生成明暗节奏；保留原有turn_light_req，由下游双闪优先。
+    hazard_light_pub_->publish(msg);
+  }
+
   void publish_brake_light_request()
   {
     std_msgs::msg::Bool msg;
@@ -239,6 +273,10 @@ private:
   VoiceSceneState state_;
   AutoDriveGate auto_drive_;
   VoiceScheduler scheduler_;
+  HazardLightControl hazard_light_;
+  
+  bool emergency_stop_st_{false};// 文档未定义，暂定；Bool，false-解除，true-急停有效，默认false。
+  bool mode_transition_abnormal_st_{false};// 文档未定义，暂定；Bool，false-解除，true-模式异常切换有效，默认false。
   bool veh_brake_st_{false}; // 文档已有veh_brake_st的缓存；通信中断保留最后状态。
 
   rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr voice_pub_;
@@ -246,6 +284,9 @@ private:
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr reverse_light_pub_;
   rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr turn_light_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr brake_light_pub_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr hazard_light_pub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr emergency_stop_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr mode_abnormal_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr brake_sub_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr mode_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr start_sub_;
