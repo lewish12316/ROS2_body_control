@@ -1,6 +1,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <optional>
 
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/bool.hpp"
@@ -12,6 +13,7 @@
 #include "voice_scheduler.hpp"
 #include "hazard_light.hpp"
 #include "aux_light.hpp"
+#include "fog_light.hpp"
 
 using namespace std::chrono_literals;
 
@@ -42,6 +44,9 @@ public:
     // 侧补光灯请求：0-关闭，1-左侧，2-右侧，3-双侧，持续点亮。
     aux_light_pub_ = create_publisher<std_msgs::msg::Int32>("aux_light_req", rclcpp::QoS(1).reliable());
     publish_aux_light_request();
+    // 后雾灯请求：false-关闭，true-持续开启。
+    fog_light_pub_ = create_publisher<std_msgs::msg::Bool>("fog_light_req", rclcpp::QoS(1).reliable());
+    publish_fog_light_request();
 
 
     // 50ms 检查独立调度：P0 5 秒、箱门 10 秒、自动前进 120 秒、遥控行驶 60 秒等。
@@ -52,9 +57,34 @@ public:
       publish_hazard_light_request();
       publish_ads_light_request();
       publish_aux_light_request();
+      publish_fog_light_request();
       update_voice_scene();
     });
 
+
+    // 文档未定义，暂定：low_visibility_st，Bool，默认false。
+    // true-能见度偏低，false-正常；由上游提供，不从光照推断。
+    low_visibility_sub_ = create_subscription<std_msgs::msg::Bool>(
+      "low_visibility_st", rclcpp::QoS(1).best_effort(),
+      [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
+        low_visibility_st_ = msg->data;
+        publish_fog_light_request();
+      });
+    // 文档未定义，暂定：fog_light_sw_cmd，Bool，true-开启，false-关闭。
+    // 初始无开启请求；仅上电且遥控时接收，其他时段指令不缓存。
+    fog_light_sw_sub_ = create_subscription<std_msgs::msg::Bool>(
+      "fog_light_sw_cmd", rclcpp::QoS(1).best_effort(),
+      [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
+        publish_fog_light_request(msg->data);
+      });
+    // 文档未定义，暂定：veh_power_st，Bool，默认false。
+    // true-整车上电，false-下电；本次仅约束后雾灯，不以待机代替下电。
+    veh_power_sub_ = create_subscription<std_msgs::msg::Bool>(
+      "veh_power_st", rclcpp::QoS(1).best_effort(),
+      [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
+        veh_power_st_ = msg->data;
+        publish_fog_light_request();
+      });
 
     // 文档未定义，暂定：low_speed_parking_st，Bool，默认false。
     // true-已确认低速靠边停靠或对位驻车，false-完成/取消/退出，由上游维护。
@@ -102,6 +132,7 @@ public:
       "veh_mode_st", rclcpp::QoS(1).best_effort(),
       [this](std_msgs::msg::Int32::ConstSharedPtr msg) {
         state_.veh_mode_st = msg->data; // 保存已有模式信号，供 ID 14 调度使用。
+        publish_fog_light_request();
         publish_ads_light_request(); // 模式优先；灯光更新先于语音调度。
         publish_hazard_light_request();
         publish_turn_light_request(); // 模式变化立即更新灯光，不等待语音调度。
@@ -220,6 +251,7 @@ public:
       [this](std_msgs::msg::Float64::ConstSharedPtr msg) {
         state_.ambient_light_received = true;
         state_.ambient_light_level_st = msg->data;
+        publish_fog_light_request();
         publish_aux_light_request();
         update_voice_scene();
       });
@@ -233,6 +265,13 @@ public:
   }
 
 private:
+  void publish_fog_light_request(std::optional<bool> command = std::nullopt)
+  {
+    std_msgs::msg::Bool msg;
+    msg.data = fog_light_.update(state_, veh_power_st_, low_visibility_st_, command);
+    fog_light_pub_->publish(msg);
+  }
+
   void publish_aux_light_request()
   {
     std_msgs::msg::Int32 msg;
@@ -324,7 +363,10 @@ private:
   VoiceScheduler scheduler_;
   HazardLightControl hazard_light_;
   AuxLightControl aux_light_;
- 
+  FogLightControl fog_light_;
+  
+  bool low_visibility_st_{false};// 文档未定义，经用户授权暂定：Bool，true-能见度偏低，false-正常，默认false。
+  bool veh_power_st_{false}; // 文档未定义，经用户授权暂定：Bool，true-整车上电，false-下电，默认false。
   bool low_speed_parking_st_{false}; // 文档未定义，经用户授权暂定：Bool，默认false；true-已确认低速靠边停靠或对位驻车。false-完成、取消或退出；由上游确认低速及动作状态，不增加低速阈值。
   bool emergency_stop_st_{false};// 文档未定义，暂定；Bool，false-解除，true-急停有效，默认false。
   bool mode_transition_abnormal_st_{false};// 文档未定义，暂定；Bool，false-解除，true-模式异常切换有效，默认false。
@@ -339,6 +381,10 @@ private:
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr hazard_light_pub_;
   rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr ads_light_pub_;
   rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr aux_light_pub_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr fog_light_pub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr low_visibility_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr fog_light_sw_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr veh_power_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr low_speed_parking_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr ads_abnormal_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr emergency_stop_sub_;

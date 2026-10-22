@@ -1,6 +1,6 @@
 # 车身控制节点
 
-`body_control_node` 实现侧补光灯、ADS 指示灯、危险警报灯、制动灯/高位制动灯、转向灯和倒车灯控制请求、自动驾驶启动请求，以及等红绿灯、车辆起步、箱门未关闭、装卸货完成确认、开锁成功、装卸货和关闭箱门提醒、低电量、远程/遥控驾驶、行驶故障、故障停车、自动驾驶前进、障碍物、左右转、倒车、行人礼让语音请求。节点不负责底盘模式仲裁、门锁控制、路径绕行、靠边停车、刹车或播放音频。
+`body_control_node` 实现后雾灯、侧补光灯、ADS 指示灯、危险警报灯、制动灯/高位制动灯、转向灯和倒车灯控制请求、自动驾驶启动请求，以及等红绿灯、车辆起步、箱门未关闭、装卸货完成确认、开锁成功、装卸货和关闭箱门提醒、低电量、远程/遥控驾驶、行驶故障、故障停车、自动驾驶前进、障碍物、左右转、倒车、行人礼让语音请求。节点不负责底盘模式仲裁、门锁控制、路径绕行、靠边停车、刹车或播放音频。
 
 ## 输入和输出
 
@@ -25,6 +25,9 @@
 | 输入 | `/mode_transition_abnormal_st` | `std_msgs/msg/Bool` | 文档未定义，经用户授权暂定：false 解除、true 模式异常切换有效，默认 false |
 | 输入 | `/ads_abnormal_st` | `std_msgs/msg/Bool` | 文档未定义，经用户授权暂定：false 正常、true 智驾异常或功能降级失效，默认 false |
 | 输入 | `/low_speed_parking_st` | `std_msgs/msg/Bool` | 文档未定义，经用户授权暂定：true 已确认低速靠边停靠或对位驻车，false 完成/取消/退出，默认 false |
+| 输入 | `/low_visibility_st` | `std_msgs/msg/Bool` | 文档未定义，经用户授权暂定：true 能见度偏低、false 正常，默认 false |
+| 输入 | `/fog_light_sw_cmd` | `std_msgs/msg/Bool` | 文档未定义，经用户授权暂定：true 开启指令、false 关闭指令，初始无开启请求 |
+| 输入 | `/veh_power_st` | `std_msgs/msg/Bool` | 文档未定义，经用户授权暂定：true 整车上电、false 下电，默认 false；本次仅约束后雾灯 |
 | 输入 | `/pedestrian_cross_st` | `std_msgs/msg/Bool` | true 检测到行人横穿 |
 | 输出 | `/ad_mode_req` | `std_msgs/msg/Bool` | true 自动驾驶模式请求、false 退出请求 |
 | 输出 | `/reverse_light_req` | `std_msgs/msg/Bool` | 文档已有倒车灯请求：false 关闭、true 开启 |
@@ -33,6 +36,7 @@
 | 输出 | `/hazard_light_req` | `std_msgs/msg/Bool` | 文档已有危险警报灯请求：false 关闭、true 请求双侧同步高频闪烁 |
 | 输出 | `/ads_light_req` | `std_msgs/msg/Int32` | 文档已有 ADS 指示灯请求：0 关闭、1 常亮、2 高频闪烁；下游执行 |
 | 输出 | `/aux_light_req` | `std_msgs/msg/Int32` | 文档已有侧补光请求：0 关闭、1 左侧、2 右侧、3 双侧；持续点亮 |
+| 输出 | `/fog_light_req` | `std_msgs/msg/Bool` | 文档已有后雾灯请求：false 关闭、true 持续开启 |
 | 输出 | `/voice_broadcast_id` | `std_msgs/msg/Int32` | 1 箱门未关闭、2 装卸货完成确认、3 装卸货、4 提醒关闭箱门、5 开锁成功、6 车辆起步、7 自动驾驶前进、8 障碍物、9 右转、10 左转、11 行人礼让、12 倒车、13 等红绿灯、14 远程/遥控驾驶、15 行驶故障、16 故障停车、17 低电量 |
 
 规范中 `ad_mode_req` 是 0/1 枚举，本示例按当前需求用 Bool 承载 false/true。接入实际车辆时需和接收端约定一致的消息类型。
@@ -400,6 +404,47 @@ ros2 topic pub --once /low_speed_parking_st std_msgs/msg/Bool "{data: false}"
 初始无其他补光条件、没有其他程序发布同名输入，确认转向延时结束后再验证停靠。发送光照 5 且行驶状态 true 可验证环境双侧补光；此时停靠结束仍保持 3，改为光照 6 或静止才撤销环境来源。若仍在转向，对应侧继续亮。
 
 启用 `BUILD_TESTING=ON` 后运行前述 `colcon test` 命令。`aux_light_test` 覆盖 999/1000ms 边界、重复直行、迟到检查、直接切换、延时中恢复转向、多来源叠加/撤销、未知及非法光照、阈值与有效判断保留、未知行驶状态及模式/授权无关性。`aux_light_ros_test` 验证新接口 QoS、原订阅复用、真实 1 秒延时、周期刷新和本机即时输出变化收发耗时≤100ms。既有灯光及语音一并回归；本机结果不代表最坏调度或硬件保证，实灯效果、亮度及硬件响应另行台架验收。
+
+## 后雾灯控制
+
+| 条件 | `fog_light_req` |
+| --- | --- |
+| 未确认上电、下电、待机或未知模式 | false |
+| 上电且自动模式，低能见度或光线不足任一成立 | true |
+| 上电且自动模式，两个环境原因均不成立 | false |
+| 上电且遥控模式 | 按本次有效手动指令控制 |
+
+**文档未定义，经用户授权暂定：`low_visibility_st`、`fog_light_sw_cmd`、`veh_power_st` 均为 Bool 输入，声明及订阅处保留授权标识。** 上游提供真实能见度和电源状态，不以光照推断雾天、不以待机代替下电。能见度输入 true 为偏低、false 为正常，默认 false；电源 true 为整车上电、false 为下电，默认 false；手动开关 true 为开启指令、false 为关闭指令，初始无开启请求。
+
+自动模式不依赖启动按钮或行驶状态，忽略手动开关；能见度正常不覆盖仍有效的光线不足，光照充足也不覆盖仍有效的低能见度。光照沿用用户暂定阈值 5，单位未定义：≤5 不足、>5 充足。负数、NaN、无穷忽略并保留最后有效判断，首次未知不触发光照来源，但明确低能见度仍可触发。光照和能见度缓存跨模式及电源变化保留。
+
+遥控模式不受环境变化覆盖，仅在已确认上电且 `veh_mode_st=2` 时接收手动指令，其他时段指令不缓存。开启后保持到关闭指令、退出遥控或下电；重新进入遥控或重新上电须收到新开启指令。重复模式或电源反馈不清除有效请求。手动请求和最后有效光照判断属于内部实现状态。
+
+相关回调立即更新输出，先于语音调度；初始化发布 false，复用 50ms 定时器刷新。复用原模式和光照订阅，三个新增输入采用 best_effort、深度 1，输出 reliable、深度 1、volatile。通信中断保留缓存，无新增过期规则或配置参数；电源输入本次仅约束后雾灯，不改变其他功能。节点只发布请求，硬件诊断、实际下电执行及实灯响应由下游负责。
+
+### 后雾灯验证
+
+编译运行节点，在另一个已加载 ROS 环境的终端观察：
+
+```bash
+ros2 topic echo /fog_light_req
+```
+
+在第三个已加载 ROS 环境的终端逐条执行，预期自动模式但未确认上电仍为 false，上电后低能见度触发 true；转遥控后 false，新开启指令后 true，下电后 false，再上电仍为 false（须新指令）：
+
+```bash
+ros2 topic pub --once /veh_mode_st std_msgs/msg/Int32 "{data: 1}"
+ros2 topic pub --once /low_visibility_st std_msgs/msg/Bool "{data: true}"
+ros2 topic pub --once /veh_power_st std_msgs/msg/Bool "{data: true}"
+ros2 topic pub --once /veh_mode_st std_msgs/msg/Int32 "{data: 2}"
+ros2 topic pub --once /fog_light_sw_cmd std_msgs/msg/Bool "{data: true}"
+ros2 topic pub --once /veh_power_st std_msgs/msg/Bool "{data: false}"
+ros2 topic pub --once /veh_power_st std_msgs/msg/Bool "{data: true}"
+```
+
+示例假定新启动节点且无其他程序发布同名输入。遥控模式可发送 false 开关指令关闭；自动模式请用光照 5/6 配合能见度 true/false 验证两个来源的合并及逐项解除。自动模式下的手动关闭不会压制环境开启；这是用户确认的模式独立规则。
+
+启用 `BUILD_TESTING=ON` 后运行前述 `colcon test` 命令。`fog_light_test` 覆盖模式/电源/光照/能见度/手动指令组合、未知与非法光照、有效判断保持及指令生命周期。`fog_light_ros_test` 验证实际接口 QoS、初始化、输入顺序、周期刷新、模式和电源切换、指令丢弃及重新开启、启动/行驶无关性，并确认下电输入不覆盖已有制动灯。即时输出变化的本机收发耗时要求≤100ms，既有灯光及语音一并回归。本机结果不代表最坏调度或硬件保证，实灯效果、下电关闭及硬件响应另行台架验收。
 
 ## 编译和运行
 

@@ -55,6 +55,14 @@ if(BUILD_TESTING)
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/aux_light_ros_test.py
       $<TARGET_FILE:body_control_node>)
   set_tests_properties(aux_light_ros_test PROPERTIES TIMEOUT 45)
+  add_executable(fog_light_test test/fog_light_test.cpp)
+  target_compile_features(fog_light_test PUBLIC cxx_std_17)
+  target_compile_options(fog_light_test PRIVATE -UNDEBUG -Wall -Wextra -Wpedantic)
+  add_test(NAME fog_light_test COMMAND fog_light_test)
+  add_test(NAME fog_light_ros_test
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/fog_light_ros_test.py
+      $<TARGET_FILE:body_control_node>)
+  set_tests_properties(fog_light_ros_test PROPERTIES TIMEOUT 45)
   add_executable(voice_scene_test test/voice_scene_test.cpp)
   target_compile_features(voice_scene_test PUBLIC cxx_std_17)
   target_compile_options(voice_scene_test PRIVATE -UNDEBUG)
