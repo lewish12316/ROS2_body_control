@@ -22,10 +22,16 @@ public:
     voice_pub_ = create_publisher<std_msgs::msg::Int32>("voice_broadcast_id", 10);
     // 发布自动驾驶模式状态请求。
     ad_mode_pub_ = create_publisher<std_msgs::msg::Bool>("ad_mode_req", 10);
+    // 文档已有倒车灯请求：true-开启，false-关闭；仅复用已有挡位信号。
+    reverse_light_pub_ = create_publisher<std_msgs::msg::Bool>("reverse_light_req", rclcpp::QoS(1).reliable());
+    publish_reverse_light_request(); // 未收到挡位时，默认关闭。
 
 
     // 50ms 检查独立调度：P0 5 秒、箱门 10 秒、自动前进 120 秒、遥控行驶 60 秒等。
-    timer_ = create_wall_timer(50ms, [this]() { update_voice_scene(); });
+    timer_ = create_wall_timer(50ms, [this]() {
+      publish_reverse_light_request();
+      update_voice_scene();
+    });
 
 
     //整车模式状态（0-待机，1-自动驾驶，2-远程遥控）
@@ -52,6 +58,7 @@ public:
       "veh_gear_st", rclcpp::QoS(1).best_effort(),
       [this](std_msgs::msg::Int32::ConstSharedPtr msg) {
         state_.veh_gear_st = msg->data;
+        publish_reverse_light_request(); // 先更新灯光，不等待定时器或语音仲裁。
         update_voice_scene();
       });
     // 车辆到站停靠状态（false-未到站，true-停靠完成）。
@@ -152,6 +159,15 @@ public:
   }
 
 private:
+  void publish_reverse_light_request()
+  {
+    std_msgs::msg::Bool msg;
+    // 挂 R 挡即持续点亮，包括静止；其他值（含非法挡位）均关闭。
+    // 独立于模式、启动授权、行驶状态和故障语音，不新增业务状态变量。
+    msg.data = state_.veh_gear_st == 1;
+    reverse_light_pub_->publish(msg);
+  }
+
   void publish_ad_mode_request()//输出自动驾驶模式状态
   {
     std_msgs::msg::Bool msg;
@@ -186,6 +202,7 @@ private:
 
   rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr voice_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr ad_mode_pub_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr reverse_light_pub_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr mode_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr start_sub_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr turn_sub_;
