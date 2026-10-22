@@ -23,6 +23,14 @@ install(TARGETS body_control_node
 if(BUILD_TESTING)
   enable_testing()
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  add_executable(mode_switch_test test/mode_switch_test.cpp)
+  target_compile_features(mode_switch_test PUBLIC cxx_std_17)
+  target_compile_options(mode_switch_test PRIVATE -UNDEBUG -Wall -Wextra -Wpedantic)
+  add_test(NAME mode_switch_test COMMAND mode_switch_test)
+  add_test(NAME mode_switch_ros_test
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/mode_switch_ros_test.py
+      $<TARGET_FILE:body_control_node>)
+  set_tests_properties(mode_switch_ros_test PROPERTIES TIMEOUT 60)
   add_test(NAME reverse_light_test
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/reverse_light_test.py
       $<TARGET_FILE:body_control_node>)

@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <iostream>
 
-#include "../src/auto_drive.hpp"
+#include "auto_drive_test_support.hpp"
 #include "../src/voice_scheduler.hpp"
 
 VoiceScheduler::TimePoint at(std::int64_t milliseconds)
@@ -127,6 +127,7 @@ void test_mode_and_start_authorization()
   for (const int mode : {0, 2, -1, 99}) {
     VoiceScheduler scheduler;
     AutoDriveGate gate;
+    confirm_safe_feedback(gate);
     auto state = ready_state();
     state.veh_mode_st = mode;
     gate.set_mode(mode);
@@ -138,6 +139,7 @@ void test_mode_and_start_authorization()
   }
   VoiceScheduler scheduler;
   AutoDriveGate gate;
+  confirm_safe_feedback(gate);
   auto state = ready_state();
   gate.set_mode(1);
   state.auto_drive_enabled = gate.enabled();

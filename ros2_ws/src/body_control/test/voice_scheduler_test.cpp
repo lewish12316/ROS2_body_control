@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <iostream>
 
-#include "../src/auto_drive.hpp"
+#include "auto_drive_test_support.hpp"
 #include "../src/voice_scheduler.hpp"
 
 using namespace std::chrono_literals;
@@ -162,6 +162,7 @@ void test_cancel_and_reentry()
     if (condition == 1) {state.veh_gear_st = 2;}
     if (condition >= 2) {
       AutoDriveGate gate;
+      confirm_safe_feedback(gate);
       gate.set_mode(1);
       state.veh_mode_st = 1;
       gate.set_start_command(true);
@@ -217,6 +218,7 @@ void test_fault_period_independent_of_mode_and_start()
   state.running_state_received = true;
   state.vehicle_running = true;
   AutoDriveGate gate; // 初始待机，未按启动。
+  confirm_safe_feedback(gate);
   assert(scheduler.update(state, at(0)) == 15);
   assert(!scheduler.update(state, at(1000))); // 重复相同故障。
   state.alarm_diag_st = 3;
@@ -348,6 +350,7 @@ void test_stopped_fault_period_and_mode_independence()
   state.running_state_received = true;
   state.vehicle_running = false;
   AutoDriveGate gate; // 待机且未启动。
+  confirm_safe_feedback(gate);
   assert(scheduler.update(state, at(0)) == 16);
   assert(!scheduler.update(state, at(1000))); // 重复停车、故障状态不重置。
   state.alarm_diag_st = 3;

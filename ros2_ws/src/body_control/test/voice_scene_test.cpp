@@ -2,12 +2,13 @@
 #include <iostream>
 
 #include "../src/voice_scene.hpp"
-#include "../src/auto_drive.hpp"
+#include "auto_drive_test_support.hpp"
 
 int main()
 {
   VoiceSceneState state;
   AutoDriveGate drive;
+  confirm_safe_feedback(drive);
   state.turn_state = 1;
   assert(select_voice_id(state) == 0);  // 启动前禁用语音。
   state.veh_gear_st = 1;
@@ -79,6 +80,7 @@ int main()
   assert(select_voice_id(state) == 0);   // 遥控接管关闭语音。
   drive.set_start_command(true);
   assert(!drive.enabled());
+  drive.set_mode(0); // 遥控接管后必须先返回待机。
   drive.set_mode(1);
   state.veh_mode_st = 1;
   assert(!drive.enabled());            // 再次进入自动模式仍需新启动命令。

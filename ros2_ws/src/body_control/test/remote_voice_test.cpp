@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <iostream>
 
-#include "../src/auto_drive.hpp"
+#include "auto_drive_test_support.hpp"
 #include "../src/voice_scheduler.hpp"
 
 VoiceScheduler::TimePoint at(std::int64_t milliseconds)
@@ -86,6 +86,7 @@ void test_stopping_restarting_and_mode_exit()
 void test_button_independence_and_existing_p0_scope()
 {
   AutoDriveGate gate;
+  confirm_safe_feedback(gate);
   gate.set_mode(2);
   auto state = remote_state(true);
   // 已有自动驾驶专用 P0 不因新增远程提示而启用。
@@ -227,6 +228,7 @@ void test_delayed_checks_and_auto_remote_transition()
   // 自动切远程取消 ID 7，切回自动必须重新启动。
   VoiceScheduler transition;
   AutoDriveGate gate;
+  confirm_safe_feedback(gate);
   gate.set_mode(1);
   gate.set_start_command(true);
   state = remote_state(true);
@@ -240,6 +242,7 @@ void test_delayed_checks_and_auto_remote_transition()
   assert(transition.update(state, at(1000)) == 14);
   assert(transition.update(state, at(61000)) == 14);
   assert(!transition.update(state, at(120000))); // 原 ID 7 的到期无效。
+  gate.set_mode(0); // 遥控接管后先回待机，再接收自动模式反馈。
   gate.set_mode(1);
   state.veh_mode_st = 1;
   state.auto_drive_enabled = gate.enabled();

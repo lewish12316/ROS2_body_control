@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <string>
 
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/bool.hpp"
@@ -24,7 +25,7 @@ public:
   {
     // 发布语音播报请求。
     voice_pub_ = create_publisher<std_msgs::msg::Int32>("voice_broadcast_id", 10);
-    // 发布自动驾驶模式状态请求。
+    // 发布自动驾驶模式进入/退出请求，与任务启动授权分开维护。
     ad_mode_pub_ = create_publisher<std_msgs::msg::Bool>("ad_mode_req", 10);
     // 倒车灯请求：true-开启，false-关闭；仅复用已有挡位信号。
     reverse_light_pub_ = create_publisher<std_msgs::msg::Bool>("reverse_light_req", rclcpp::QoS(1).reliable());
@@ -95,21 +96,36 @@ public:
         publish_aux_light_request();
       });
 
-    // 文档未定义，暂定：ads_abnormal_st，Bool，默认false。
+    // 文档未定义，经用户同意新增：adc_self_check_st，Bool。
+    // true=ADC自检通过且地图、定位/位姿就绪；false或未收到禁止申请自动模式。
+    self_check_sub_ = create_subscription<std_msgs::msg::Bool>(
+      "adc_self_check_st", rclcpp::QoS(1).best_effort(),
+      [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
+        auto_drive_.set_self_check(msg->data);
+        update_mode_control();
+      });
+
+    // 文档未定义，经用户同意复用：ads_abnormal_st，Bool，true=智驾异常/降级失效。
     // true-智驾异常或功能降级失效，false-正常；由上游置位和解除。
     ads_abnormal_sub_ = create_subscription<std_msgs::msg::Bool>(
       "ads_abnormal_st", rclcpp::QoS(1).best_effort(),
       [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
         ads_abnormal_st_ = msg->data;
+        // 文档未定义，经用户同意复用到模式切换安全校验。
+        auto_drive_.set_ads_abnormal(msg->data);
         publish_ads_light_request();
+        update_mode_control();
       });
 
-    // 文档未定义，暂定：emergency_stop_st，Bool，false-解除，true-急停有效。
+    // 文档未定义，经用户同意复用：emergency_stop_st，Bool，false-解除，true-急停有效。
     emergency_stop_sub_ = create_subscription<std_msgs::msg::Bool>(
       "emergency_stop_st", rclcpp::QoS(1).best_effort(),
       [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
         emergency_stop_st_ = msg->data;
+        // 文档未定义，经用户同意复用到模式切换安全校验。
+        auto_drive_.set_emergency_stop(msg->data);
         publish_hazard_light_request();
+        update_mode_control();
       });
     // 文档未定义，暂定：mode_transition_abnormal_st，Bool，false-解除，true-模式异常切换有效。
     mode_abnormal_sub_ = create_subscription<std_msgs::msg::Bool>(
@@ -137,18 +153,17 @@ public:
         publish_hazard_light_request();
         publish_turn_light_request(); // 模式变化立即更新灯光，不等待语音调度。
         if (auto_drive_.set_mode(msg->data)) {
-          publish_ad_mode_request();
+          RCLCPP_INFO(get_logger(), "VCU veh_mode_st=%d", msg->data);
         }
-        update_voice_scene();
+        update_mode_control();
       });
     //启动按键指令（0-停止，1-启动）
     start_sub_ = create_subscription<std_msgs::msg::Bool>(
       "mode_sw_cmd", rclcpp::QoS(1).best_effort(),
       [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
         auto_drive_.set_start_command(msg->data);
-        // 先发布自动驾驶请求，再执行语音判断。
-        publish_ad_mode_request();
-        update_voice_scene();
+        // 先发布模式请求，再根据独立的任务启动授权更新语音。
+        update_mode_control();
       });
     // 整车挡位信号（0-P，1-R，2-N，3-D）。
     gear_sub_ = create_subscription<std_msgs::msg::Int32>(
@@ -186,8 +201,9 @@ public:
       "obs_detect_st", rclcpp::QoS(1).best_effort(),
       [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
         state_.obs_detect_st = msg->data;
+        auto_drive_.set_obstacle(msg->data);
         publish_hazard_light_request();
-        update_voice_scene();
+        update_mode_control();
       });
     // 电池电量预警，由上游按 SOC<=20% 置 true，不新增 SOC 信号。
     battery_sub_ = create_subscription<std_msgs::msg::Bool>(
@@ -202,8 +218,9 @@ public:
       "alarm_diag_st", rclcpp::QoS(1).best_effort(),
       [this](std_msgs::msg::Int32::ConstSharedPtr msg) {
         state_.alarm_diag_st = msg->data;
+        auto_drive_.set_alarm(msg->data);
         publish_hazard_light_request();
-        update_voice_scene();
+        update_mode_control();
       });
     // 接收转弯状态。（0-直行，1-左转，2-右转）
     turn_sub_ = create_subscription<std_msgs::msg::Int32>(
@@ -222,9 +239,10 @@ public:
       [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
         state_.running_state_received = true;
         state_.vehicle_running = msg->data;
+        auto_drive_.set_running(msg->data);
         publish_aux_light_request();
         publish_hazard_light_request();
-        update_voice_scene();
+        update_mode_control();
       });
     // 文档未定义，暂定，名称、类型及单位待后续确认。
     // 临时车速接口：Float32，km/h；每条消息更新内部序号，供 ID 6 识别起步后新反馈。
@@ -330,12 +348,21 @@ private:
     reverse_light_pub_->publish(msg);
   }
 
-  void publish_ad_mode_request()//输出自动驾驶模式状态
+  void update_mode_control()
   {
-    std_msgs::msg::Bool msg;
-    msg.data = auto_drive_.enabled();
-    ad_mode_pub_->publish(msg);
-    RCLCPP_INFO(get_logger(), "ad_mode_req=%s", msg.data ? "true" : "false");
+    // 初次显式停止或请求变化时发布；遥控接管后不发送任何自动请求。
+    if (const auto request = auto_drive_.take_request()) {
+      std_msgs::msg::Bool msg;
+      msg.data = *request;
+      ad_mode_pub_->publish(msg);
+      RCLCPP_INFO(get_logger(), "ADC ad_mode_req=%s", msg.data ? "true" : "false");
+    }
+    const std::string status = auto_drive_.status();
+    if (status != last_mode_status_) {
+      RCLCPP_INFO(get_logger(), "ADC mode control: %s", status.c_str());
+      last_mode_status_ = status;
+    }
+    update_voice_scene();
   }
 
   void update_voice_scene()//更新语音播报状态
@@ -360,6 +387,8 @@ private:
 
   VoiceSceneState state_;
   AutoDriveGate auto_drive_;
+  // 内部状态，非文档业务信号，经用户同意新增：用于合并重复状态日志。
+  std::string last_mode_status_;
   VoiceScheduler scheduler_;
   HazardLightControl hazard_light_;
   AuxLightControl aux_light_;
@@ -368,10 +397,10 @@ private:
   bool low_visibility_st_{false};// 文档未定义，经用户授权暂定：Bool，true-能见度偏低，false-正常，默认false。
   bool veh_power_st_{false}; // 文档未定义，经用户授权暂定：Bool，true-整车上电，false-下电，默认false。
   bool low_speed_parking_st_{false}; // 文档未定义，经用户授权暂定：Bool，默认false；true-已确认低速靠边停靠或对位驻车。false-完成、取消或退出；由上游确认低速及动作状态，不增加低速阈值。
-  bool emergency_stop_st_{false};// 文档未定义，暂定；Bool，false-解除，true-急停有效，默认false。
+  bool emergency_stop_st_{false};// 文档未定义，经用户同意复用到模式切换；Bool，false-解除，true-急停有效，默认false。
   bool mode_transition_abnormal_st_{false};// 文档未定义，暂定；Bool，false-解除，true-模式异常切换有效，默认false。
   bool veh_brake_st_{false}; // 文档已有veh_brake_st的缓存；通信中断保留最后状态。
-  bool ads_abnormal_st_{false};// 文档未定义，经用户授权暂定：Bool，true-智驾异常或功能降级失效，false-正常。默认false，未收到反馈按正常处理；通信中断保留最后状态。
+  bool ads_abnormal_st_{false};// 文档未定义，经用户同意复用到模式切换：Bool，true-智驾异常或功能降级失效，false-正常。灯光默认false、未收到按正常处理；模式校验独立按未知处理；通信中断保留最后状态。
 
   rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr voice_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr ad_mode_pub_;
@@ -392,6 +421,8 @@ private:
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr brake_sub_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr mode_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr start_sub_;
+  // 文档未定义，经用户同意新增：adc_self_check_st，Bool，自检及地图定位汇总就绪。
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr self_check_sub_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr turn_sub_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr gear_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr arrive_sub_;
