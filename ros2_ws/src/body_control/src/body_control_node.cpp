@@ -11,6 +11,7 @@
 #include "voice_scene.hpp"
 #include "voice_scheduler.hpp"
 #include "hazard_light.hpp"
+#include "aux_light.hpp"
 
 using namespace std::chrono_literals;
 
@@ -38,6 +39,9 @@ public:
     // ADS指示灯请求：0-关闭，1-常亮，2-高频闪烁（下游执行）。
     ads_light_pub_ = create_publisher<std_msgs::msg::Int32>("ads_light_req", rclcpp::QoS(1).reliable());
     publish_ads_light_request();
+    // 侧补光灯请求：0-关闭，1-左侧，2-右侧，3-双侧，持续点亮。
+    aux_light_pub_ = create_publisher<std_msgs::msg::Int32>("aux_light_req", rclcpp::QoS(1).reliable());
+    publish_aux_light_request();
 
 
     // 50ms 检查独立调度：P0 5 秒、箱门 10 秒、自动前进 120 秒、遥控行驶 60 秒等。
@@ -47,9 +51,19 @@ public:
       publish_brake_light_request();
       publish_hazard_light_request();
       publish_ads_light_request();
+      publish_aux_light_request();
       update_voice_scene();
     });
 
+
+    // 文档未定义，暂定：low_speed_parking_st，Bool，默认false。
+    // true-已确认低速靠边停靠或对位驻车，false-完成/取消/退出，由上游维护。
+    low_speed_parking_sub_ = create_subscription<std_msgs::msg::Bool>(
+      "low_speed_parking_st", rclcpp::QoS(1).best_effort(),
+      [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
+        low_speed_parking_st_ = msg->data;
+        publish_aux_light_request();
+      });
 
     // 文档未定义，暂定：ads_abnormal_st，Bool，默认false。
     // true-智驾异常或功能降级失效，false-正常；由上游置位和解除。
@@ -167,6 +181,7 @@ public:
       [this](std_msgs::msg::Int32::ConstSharedPtr msg) {
         state_.turn_state =
           (msg->data == 1 || msg->data == 2) ? msg->data : 0;
+        publish_aux_light_request();
         publish_turn_light_request();
         update_voice_scene();
       });
@@ -176,6 +191,7 @@ public:
       [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
         state_.running_state_received = true;
         state_.vehicle_running = msg->data;
+        publish_aux_light_request();
         publish_hazard_light_request();
         update_voice_scene();
       });
@@ -204,6 +220,7 @@ public:
       [this](std_msgs::msg::Float64::ConstSharedPtr msg) {
         state_.ambient_light_received = true;
         state_.ambient_light_level_st = msg->data;
+        publish_aux_light_request();
         update_voice_scene();
       });
     //行人横穿检测状态。（0-未横穿，1-有）
@@ -216,6 +233,14 @@ public:
   }
 
 private:
+  void publish_aux_light_request()
+  {
+    std_msgs::msg::Int32 msg;
+    msg.data = aux_light_.update(state_, low_speed_parking_st_, AuxLightControl::Clock::now());
+    // 独立于模式、启动、语音和危险警报；上游确认停靠，不从车速/到站/EPB推断。
+    aux_light_pub_->publish(msg);
+  }
+
   void publish_ads_light_request()
   {
     std_msgs::msg::Int32 msg;
@@ -298,7 +323,9 @@ private:
   AutoDriveGate auto_drive_;
   VoiceScheduler scheduler_;
   HazardLightControl hazard_light_;
-  
+  AuxLightControl aux_light_;
+ 
+  bool low_speed_parking_st_{false}; // 文档未定义，经用户授权暂定：Bool，默认false；true-已确认低速靠边停靠或对位驻车。false-完成、取消或退出；由上游确认低速及动作状态，不增加低速阈值。
   bool emergency_stop_st_{false};// 文档未定义，暂定；Bool，false-解除，true-急停有效，默认false。
   bool mode_transition_abnormal_st_{false};// 文档未定义，暂定；Bool，false-解除，true-模式异常切换有效，默认false。
   bool veh_brake_st_{false}; // 文档已有veh_brake_st的缓存；通信中断保留最后状态。
@@ -311,6 +338,8 @@ private:
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr brake_light_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr hazard_light_pub_;
   rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr ads_light_pub_;
+  rclcpp::Publisher<std_msgs::msg::Int32>::SharedPtr aux_light_pub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr low_speed_parking_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr ads_abnormal_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr emergency_stop_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr mode_abnormal_sub_;
