@@ -20,7 +20,7 @@ public:
     {
       night_ = state.ambient_light_level_st <= kNightThreshold;
     } // 非法光照忽略，保留此前有效昼夜；无有效值则保持未知。
-    const bool enabled = state.veh_mode_st == 1 && state.auto_drive_enabled &&
+    const bool enabled = automatic_voice_enabled(state) &&
       state.traffic_light_wait_st && state.running_state_received && !state.vehicle_running;
     if (!enabled) {
       phase_.reset();

@@ -46,7 +46,9 @@
 
 ## 语音触发逻辑
 
-除 ID 2、3、4、5、14、15、16 外，其他语音均要求“自动模式且已启动”。
+ID 1、6、7、8、9、10、11、12、13、17 统一调用 `automatic_voice_enabled(state)`：只有 `veh_mode_st==1` 且 `auto_drive_enabled=true` 才能进入各自场景判断。`auto_drive_enabled` 是由节点从 `AutoDriveGate::enabled()` 更新的内部有效启动授权，不是底盘接管成功反馈。待机、遥控及未知模式即使与授权 true 矛盾，也不放行自动相关语音。
+
+ID 2、3、4、5、14、15、16 保留独立启用条件；故障判断在公共开关之前。各任务仍先更新触发、取消和超时再仲裁，不在总调度器或发布层统一拦截非自动模式。
 
 - 自动模式已有效启动，且已收到 `trunk_lock_st=false`：ID 1，箱门未关闭，请关闭箱门，P1；条件完整后等待 10 秒首轮，此后每 10 秒一轮。未锁仅近似箱门未关闭，不能确认实际开闭。
 - `veh_arrive_st=true`、`veh_gear_st=2`（N 挡）且 `veh_epb_st=true`：ID 3，车辆已到达目的地请及时装卸货，P2，每次到站最多请求一次，不限制模式和启动按钮。
@@ -57,7 +59,7 @@
 - `alarm_diag_st>0` 且已收到 `veh_running_st=false`：ID 16，车辆故障，请勿靠近，并请绕行。任何模式及未按启动按钮时均可触发；首次立即发送，此后每 5 秒一次。
 - 自动模式已启动、`traffic_light_wait_st=true`、已确认静止且光照已知：ID 13，车辆等待中，请勿靠近，P1；白天立即首轮并每 10 秒循环，夜间按单次规则。
 - 切入 `veh_mode_st=2`：一次 ID 14，远程/遥控驾驶中，请注意避让；该模式下确认开始行驶时立即请求 ID 14，此后每 60 秒一轮，优先级 P1。切入时已在行驶，两种请求合并为一次。
-- 自动模式已有效启动，已知行驶状态从 false→true，且起步后不足 3 秒时确认 `0≤veh_speed_st<5` km/h：ID 6，车辆起步，请注意安全，P1，每次起步最多一次。
+- 自动模式已有效启动，已知行驶状态从 false→true，且起步后不足 3 秒内新收到的车速满足 `0≤veh_speed_st<5` km/h：ID 6，车辆起步，请注意安全，P1，每次起步最多一次。
 - 已收到 `veh_running_st=true` 且 `veh_gear_st=3`（D 挡）：ID 7，自动驾驶中，请注意车距和避让。首次立即请求，此后每 120 秒一轮，优先级 P1。
 - `veh_gear_st=1`（R 挡）：ID 12，倒车中，请注意安全。只以挂 R 挡为场景条件，不额外要求车辆已运动。
 - `obs_detect_st=true`：ID 8，紧急避让，请注意安全；false 结束该提示。
@@ -82,9 +84,9 @@ ID 16 按用户选择的方案 1 实现：以“故障且静止”近似判断�
 
 - 仅自动模式且已有效启动时启用，沿用有效启动近似表示 APP／小程序发车，无法识别实际点击来源。复用已有 `veh_running_st`，并使用已授权的临时车速接口；不额外要求挡位、到站或 EPB。
 - 以已确认静止→行驶的转换作为起步事件。首次收到 true 仅初始化；授权建立时已行驶不补触发，授权外起步不缓存。授权建立时已静止则允许随后起步。每次停车后再起步可重新触发，持续行驶及重复输入不重试。
-- 从起步边沿的接收处理时刻起保留候选任务，只有仍行驶且已收到有效 `0≤veh_speed_st<5` km/h 时才可发送。车速允许随后补齐，但总期限仍为 3 秒；达到 3 秒即取消，不因车速补齐或阻塞延长。
-- 未收到车速不使用默认零值；负数、NaN、正负无穷均视为未知，后续有效值可在原期限内补齐。使用最新收到值，不新增数据过期机制，因此不能判断反馈是否陈旧。非法反馈会替换旧值，不能继续沿用旧的低速值发送。
-- 确认车速≥5 km/h、重新停车、停止或退出自动模式立即取消未发请求；同次行驶中减速不重新触发。已经发送的请求不撤回。
+- 从起步边沿的接收处理时刻起保留候选任务，只使用该边沿之后新收到的车速反馈，且仍行驶、车速有效并满足 `0≤veh_speed_st<5` km/h 时才可发送。旧高速不取消本次候选，旧低速不提前触发；每次起步都必须重新收到反馈。总期限仍为 3 秒，达到即取消，不因车速补齐或阻塞延长。
+- 每条车速消息递增内部接收序号，包括数值相同或非法的反馈；起步时记录当前序号，只有之后序号变化才认为收到新反馈。未收到新反馈不使用缓存或默认零值。负数、NaN、正负无穷均视为未知，后续有效新反馈可在原期限内补齐；非法反馈不能继续沿用旧低速。该机制仅识别本节点接收顺序，不新增全局有效期，也无法识别上游真实采集时间或传输延迟。
+- 起步后新反馈确认车速≥5 km/h、重新停车、停止或退出自动模式立即取消未发请求；同次行驶中减速不重新触发。已经发送的请求不撤回。
 - 有效 P0 及低电量任务优先，P0 整段有效期间不穿插。P1 顺序 1→6→13→2→14→7，P2 保持 5→3→4。等待车速不阻塞其他已就绪请求，也不延迟 ID 7；同时就绪时先请求 ID 6。每次调度最多一条，各自期限不变。
 - 内部接收标记、前值、候选时间仅用于调度。此功能不控制车辆或门锁；节点保证请求顺序，实际播放排队由下游负责。
 
@@ -183,468 +185,941 @@ ros2 run body_control body_control_node
 
 ## 手动验证
 
-下面其他功能的示例假定没有故障且低电量标志为 false。若曾注入故障，先发送 `/alarm_diag_st` 的 `data: 0` 清除测试状态，避免 ID 15 或 ID 16 持续优先；曾注入低电量则发送 `/battery_low_power_st` 的 `data: false` 取消剩余任务。
+### 通用准备
 
-分别在两个终端中观察请求和语音，每个终端先加载 ROS 2 环境：
+#### 1. 确认环境和工作目录
+
+示例使用已安装 ROS 2 Humble 的 Bash 终端，工作空间路径为 `/home/user/桌面/function/ros2_ws`。如果项目放在其他位置，请将下面所有工作空间路径替换为实际路径。
+
+打开三个终端，整个验证过程固定按下表分工：
+
+| 终端 | 用途 | 运行期间的状态 |
+| --- | --- | --- |
+| 终端 1 | 编译、启动节点；查看自动驾驶请求和语音日志 | 节点持续运行，不在这里输入状态消息 |
+| 终端 2 | 观察 `/voice_broadcast_id` 的输出 | `ros2 topic echo` 持续运行 |
+| 终端 3 | 按各 ID 步骤发送模拟输入 | 每条命令执行完成后，继续输入下一条 |
+
+这些示例以只有当前测试节点接收、处理模拟状态为前提。若其他程序持续发布同名输入，会覆盖手动输入，结果可能不同。
+
+#### 2. 终端 1：编译并启动节点
+
+首次验证或代码改动后，在**终端 1**执行：
 
 ```bash
 source /opt/ros/humble/setup.bash
-ros2 topic echo /ad_mode_req
+cd /home/user/桌面/function/ros2_ws
+colcon build --packages-select body_control --cmake-args -DPython3_EXECUTABLE=/usr/bin/python3 -DBUILD_TESTING=ON
+source /home/user/桌面/function/ros2_ws/install/setup.bash
+ros2 run body_control body_control_node
 ```
 
+先确认编译结果没有 `Failed`。最后一条命令运行后，终端不会回到输入提示符，这是节点正在运行的正常表现；尚未输入状态时，没有语音日志也正常。
+
+后面各节要求“重启节点”时，**只在终端 1**按 `Ctrl+C` 停止当前节点，再执行：
+
+```bash
+ros2 run body_control body_control_node
+```
+
+不改代码时无需重新编译。若关闭过终端 1，重新打开后须先执行本节的两条 `source` 命令，再运行节点。不要在另一个终端额外启动第二个同名节点。
+
+#### 3. 终端 2：持续观察语音请求
+
+在**终端 2**执行：
+
 ```bash
 source /opt/ros/humble/setup.bash
+source /home/user/桌面/function/ros2_ws/install/setup.bash
 ros2 topic echo /voice_broadcast_id
 ```
 
-在第三个终端先给定右转场景，再按顺序进入自动模式并启动：
+#### 4. 终端 3：加载环境并确认节点在线
+
+在**终端 3**执行：
 
 ```bash
 source /opt/ros/humble/setup.bash
-ros2 topic pub --once /veh_turn_st std_msgs/msg/Int32 "{data: 2}"
-ros2 topic pub --once /veh_mode_st std_msgs/msg/Int32 "{data: 1}"
+source /home/user/桌面/function/ros2_ws/install/setup.bash
 ```
 
-此时没有语音。发送启动按钮：
+#### 5. 每个 ID 从干净状态开始
+
+**每次切换到新 ID，或者重新做一组独立测试，都要先在终端 1 重启节点。** 节点会保存已收到的状态和任务计时，单纯停止发送消息不会自动清空它们。终端 2 保持监听，终端 3 的环境无需重复加载。
+
+各节只发送验证该 ID 所需的状态。不要把上一个 ID 的输入一起重发。例如故障提示会抢占其他语音，低电量任务也会让其他提示等待。重启后不要主动给所有话题发布“默认值”：有些测试专门验证“尚未收到反馈”的情况。
+
+#### 6. 如何判断通过
+
+- 按本节顺序核对：**触发前是否无输出、触发时是否出现目标 ID、周期/次数是否正确、取消后是否停止新增请求**。已经打印出来的历史行不会消失。
+- “立即”指条件齐全后节点随回调或约 50ms 调度检查发出请求，不表示音频已经播放完成。
+- 时间从节点收到最后一项必要条件开始计算；文中的等待时间均为近似值。CLI 和 DDS 有延迟，不宜靠手动操作判定恰好 3 秒或 10 秒的边界。
+- `/veh_epb_st`、`/veh_speed_st`、`/traffic_light_wait_st` 是已授权的临时接口；光照阈值 5 也是用户暂定值，正式含义和限制见前文接口说明。
+- 精确超时、抢占和取消边界请使用本文末尾的“逻辑测试”；本节先验证最容易观察的正常触发、重复和结束行为。
+
+### ID 1：箱门未关闭
+
+**终端 1**：按通用准备重启节点。**终端 2**：保持语音观察命令运行；以下只核对本节开始后的新输出。
+
+**第 1 步｜终端 3：**进入自动模式、启动，并发送首次未锁反馈。
+
 
 ```bash
-ros2 topic pub --once /mode_sw_cmd std_msgs/msg/Bool "{data: true}"
-```
-
-应看到请求 true 和语音 ID 9，此后每约 5 秒再次输出 9。再模拟有行人且车辆已停：
-
-```bash
-ros2 topic pub --once /pedestrian_cross_st std_msgs/msg/Bool "{data: true}"
-ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: false}"
-```
-
-应切换为 ID 11。停止命令应输出请求 false 并停止后续语音：
-
-```bash
-ros2 topic pub --once /mode_sw_cmd std_msgs/msg/Bool "{data: false}"
-```
-
-再次启动后，再模拟退出自动模式：
-
-```bash
-ros2 topic pub --once /mode_sw_cmd std_msgs/msg/Bool "{data: true}"
-ros2 topic pub --once /veh_mode_st std_msgs/msg/Int32 "{data: 2}"
-```
-
-也应输出自动驾驶请求 false，并停止自动驾驶相关语音；切入远程/遥控模式同时会请求一次 ID 14。再次进入自动模式但不发启动命令且无故障时应保持静默。
-
-## 倒车手动验证
-
-启动节点，并用另一个终端观察 `/voice_broadcast_id`。在第三个终端加载 ROS 2 环境后执行：
-
-```bash
-source /opt/ros/humble/setup.bash
-ros2 topic pub --once /veh_turn_st std_msgs/msg/Int32 "{data: 0}"
-ros2 topic pub --once /pedestrian_cross_st std_msgs/msg/Bool "{data: false}"
 ros2 topic pub --once /veh_mode_st std_msgs/msg/Int32 "{data: 1}"
 ros2 topic pub --once /mode_sw_cmd std_msgs/msg/Bool "{data: true}"
-ros2 topic pub --once /veh_gear_st std_msgs/msg/Int32 "{data: 1}"
+ros2 topic pub --once /trunk_lock_st std_msgs/msg/Bool "{data: false}"
 ```
 
-应立即输出 ID 12，之后每约 5 秒发送一次。重复发送 R 挡不应额外立即播报或重置计时。挂入 D 挡后停止倒车提示；若同时已收到行驶中状态，则会开始 ID 7 的新一轮：
+**第 2 步｜观察：**终端 1 应出现 `ad_mode_req=true`；终端 2 不应立即出现 ID 1，约 10 秒后出现 `data: 1`，之后每约 10 秒一次。第一次锁反馈为 false 只初始化，因此不会产生 ID 5 或 ID 2。这里以“未锁”近似“箱门未关闭”，无法确认实际开闭。
+
+**第 3 步｜终端 3：**在已经看到 ID 1 后，再发送一次相同未锁状态。
+
 
 ```bash
-ros2 topic pub --once /veh_gear_st std_msgs/msg/Int32 "{data: 3}"
+ros2 topic pub --once /trunk_lock_st std_msgs/msg/Bool "{data: false}"
 ```
 
-再次挂 R 挡应立即恢复 ID 12。R 挡期间发送停止按钮 false 或退出自动模式，也应停止后续提示。
+**观察：**不应额外立即出现 ID 1，下一轮仍沿用原来的时间，不从这条重复消息重新等待 10 秒。
 
-## 障碍物提示手动验证
+**第 4 步｜终端 3：**发送上锁状态。
 
-启动节点后，在另一个终端观察 `/voice_broadcast_id`，第三个终端执行：
 
 ```bash
-source /opt/ros/humble/setup.bash
-ros2 topic pub --once /veh_turn_st std_msgs/msg/Int32 "{data: 0}"
-ros2 topic pub --once /pedestrian_cross_st std_msgs/msg/Bool "{data: false}"
-ros2 topic pub --once /veh_gear_st std_msgs/msg/Int32 "{data: 3}"
-ros2 topic pub --once /obs_detect_st std_msgs/msg/Bool "{data: true}"
-ros2 topic pub --once /veh_mode_st std_msgs/msg/Int32 "{data: 1}"
+ros2 topic pub --once /trunk_lock_st std_msgs/msg/Bool "{data: true}"
 ```
 
-全新启动的节点尚未收到启动按钮，不应发出语音。再发送：
+**观察：**终端 2 在之后至少 12 秒内不再新增 ID 1。同次启动授权内再次发送 false，会立即产生一次 ID 5、启动 ID 2 的延时任务，同时 ID 1 重新等待 10 秒；这些关联 ID 不表示测试失败。停止按钮 false 或退出自动模式也会取消 ID 1。
+
+
+### ID 2：装卸货完成确认
+
+**终端 1**：按通用准备重启节点。**终端 2**：保持语音观察命令运行；以下只核对本节开始后的新输出。
+
+**第 1 步｜终端 3：**只发送首次未锁状态，不进入自动模式。
+
 
 ```bash
-ros2 topic pub --once /mode_sw_cmd std_msgs/msg/Bool "{data: true}"
+ros2 topic pub --once /trunk_lock_st std_msgs/msg/Bool "{data: false}"
 ```
 
-应立即输出 ID 8，之后每约 5 秒输出一次。重复发送 `obs_detect_st=true` 不应额外立即输出或重置计时。发送 false 后停止该提示：
+**观察：**终端 2 无输出。首次状态不是一次开锁事件，不触发 ID 5，也不启动 ID 2 计时。
+
+**第 2 步｜终端 3：**依次模拟上锁、开锁。
+
 
 ```bash
-ros2 topic pub --once /obs_detect_st std_msgs/msg/Bool "{data: false}"
+ros2 topic pub --once /trunk_lock_st std_msgs/msg/Bool "{data: true}"
+ros2 topic pub --once /trunk_lock_st std_msgs/msg/Bool "{data: false}"
 ```
 
-再次发送 true 应立即恢复 ID 8。检测为 true 时，按停止按钮或退出自动模式也应停止后续提示。清除障碍物后只有存在未超时的待播 ID 7 时才会补发，否则等下一轮到期。
+**第 3 步｜观察：**终端 2 先立即出现一次 `data: 5`，这是正常的开锁提示。从最后一条开锁反馈起持续观察：
 
-## 自动驾驶前进提示手动验证
+| 开锁后时间 | 终端 2 的预期新增输出 |
+| --- | --- |
+| 约 60 秒 | 第一次 `data: 2` |
+| 约 120 秒 | 第二次 `data: 2` |
+| 约 180 秒 | 第三次 `data: 2` |
+| 到约 240 秒 | 不出现第四次 ID 2 |
 
-重启节点，在另一个终端观察 `/voice_broadcast_id`，然后依次执行：
+三个时间点都相对于开锁事件，不是相对于上一次实际输出。重复发送 false 不重新计时。手动完整观察需要约 4 分钟；无需等待的精确验证见“逻辑测试”。
+
+**第 4 步｜终端 3：**如需另外验证取消，先再次上锁、开锁，等待任意短于 60 秒的时间，再执行最后一条上锁命令。
+
 
 ```bash
-source /opt/ros/humble/setup.bash
-ros2 topic pub --once /veh_turn_st std_msgs/msg/Int32 "{data: 0}"
-ros2 topic pub --once /pedestrian_cross_st std_msgs/msg/Bool "{data: false}"
-ros2 topic pub --once /obs_detect_st std_msgs/msg/Bool "{data: false}"
-ros2 topic pub --once /veh_gear_st std_msgs/msg/Int32 "{data: 3}"
-ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: true}"
-ros2 topic pub --once /veh_mode_st std_msgs/msg/Int32 "{data: 1}"
+ros2 topic pub --once /trunk_lock_st std_msgs/msg/Bool "{data: true}"
+ros2 topic pub --once /trunk_lock_st std_msgs/msg/Bool "{data: false}"
 ```
 
-此时未启动，不应有语音。再发送启动命令：
+在尚未到 60 秒时执行：
+
 
 ```bash
-ros2 topic pub --once /mode_sw_cmd std_msgs/msg/Bool "{data: true}"
+ros2 topic pub --once /trunk_lock_st std_msgs/msg/Bool "{data: true}"
 ```
 
-应立即发送 ID 7，之后在没有 P0 的情况下，每约 120 秒发送一次。重复发送行驶中、D 挡、相同模式或启动命令，不应额外发送或重置计时。
+**观察：**这次新开锁可能产生 ID 5，但后续不得出现这组任务的 ID 2。用锁状态转换近似开锁，不能识别 APP 点击，也不判断实际装卸是否完成。
 
-发送行驶状态 false 或换入 N 挡，应取消常规提示；恢复行驶中且 D 挡后，立即开始新一轮。停止按钮 false 或退出自动模式也应取消请求。
+### ID 3：装卸货
 
-验证 P0 等待规则，可在新一轮启动前置 `obs_detect_st=true`，此时应先输出 ID 8；从前进条件成立的时刻开始，不足 10 秒清除障碍物应补发 ID 7，超过 10 秒清除则不补发。无论哪种情况，下一轮仍从本轮开始时刻起计算 120 秒。命令行和 DDS 调度有延迟，精确 10 秒及 120 秒边界由可控时间单元测试覆盖。
+**终端 1**：按通用准备重启节点。**终端 2**：保持语音观察命令运行；以下只核对本节开始后的新输出。
 
-## 行驶故障提示手动验证
+**第 1 步｜终端 3：**发送到站和 N 挡，不发送自动模式或启动按钮。
 
-重启节点，不发送自动模式或启动命令，在另一个终端观察 `/voice_broadcast_id`。第三个终端先注入故障：
-
-```bash
-source /opt/ros/humble/setup.bash
-ros2 topic pub --once /alarm_diag_st std_msgs/msg/Int32 "{data: 1}"
-```
-
-此时尚未收到行驶状态，不应播报。再确认车辆行驶：
 
 ```bash
-ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: true}"
-```
-
-应立即输出 ID 15，此后每约 5 秒输出一次。重复故障或将故障改为其他正数，不应额外立即输出或重置周期。在持续行驶且故障为正数时执行：
-
-```bash
-ros2 topic pub --once /alarm_diag_st std_msgs/msg/Int32 "{data: 2}"
-ros2 topic pub --once /mode_sw_cmd std_msgs/msg/Bool "{data: false}"
-ros2 topic pub --once /veh_mode_st std_msgs/msg/Int32 "{data: 2}"
-```
-
-ID 15 应保持原周期继续发送。发送停车状态应立即切换到 ID 16，随后每 5 秒一次：
-
-```bash
-ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: false}"
-```
-
-再次发送行驶状态 true 应立即恢复 ID 15，并重新开始 5 秒周期；将故障值改为 0 或负数应结束故障提示。测试结束清除故障：
-
-```bash
-ros2 topic pub --once /alarm_diag_st std_msgs/msg/Int32 "{data: 0}"
-```
-
-还可先发送行驶状态 true、再发送故障值，确认另一种输入顺序也能触发。自动模式已启动时，可结合倒车、障碍物、转弯提示验证 ID 15 抢占；故障清除后恢复相应场景。P1 在故障期间仍遵循各自期限：ID 1/6/13 为 3 秒，ID 2/7/14 为 10 秒。
-
-## 故障停车提示手动验证
-
-重启节点，不发送自动模式或启动命令，在另一个终端观察 `/voice_broadcast_id`。第三个终端先确认车辆静止：
-
-```bash
-source /opt/ros/humble/setup.bash
-ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: false}"
-```
-
-此时无故障，不应输出语音。再发送故障：
-
-```bash
-ros2 topic pub --once /alarm_diag_st std_msgs/msg/Int32 "{data: 1}"
-```
-
-应立即发送 ID 16，此后每约 5 秒重复。也可重启节点后先发送故障，再发送静止状态；只有完整接收到两个条件后才输出 ID 16，不需要先经历行驶故障。
-
-重复发送静止状态、将故障等级改为正数 2、按停止按钮或切换到遥控模式，都不应额外立即发送或改变周期：
-
-```bash
-ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: false}"
-ros2 topic pub --once /alarm_diag_st std_msgs/msg/Int32 "{data: 2}"
-ros2 topic pub --once /mode_sw_cmd std_msgs/msg/Bool "{data: false}"
-ros2 topic pub --once /veh_mode_st std_msgs/msg/Int32 "{data: 2}"
-```
-
-发送行驶状态 true 应立即切换到 ID 15；再发送 false 应立即回到 ID 16，两次切换均重新开始 5 秒周期：
-
-```bash
-ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: true}"
-ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: false}"
-```
-
-故障清零或变为负数后停止故障提示；自动驾驶已启动时可恢复其他满足条件的场景。测试结束清除故障：
-
-```bash
-ros2 topic pub --once /alarm_diag_st std_msgs/msg/Int32 "{data: 0}"
-```
-
-## 远程/遥控驾驶提示手动验证
-
-重启节点，在另一个终端观察 `/voice_broadcast_id`，第三个终端先发送静止状态并切入远程/遥控模式：
-
-```bash
-source /opt/ros/humble/setup.bash
-ros2 topic pub --once /alarm_diag_st std_msgs/msg/Int32 "{data: 0}"
-ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: false}"
-ros2 topic pub --once /veh_mode_st std_msgs/msg/Int32 "{data: 2}"
-```
-
-应立即输出一次 ID 14，保持静止时不应每 60 秒重复。重复发送模式 2 不应重新播报。再确认开始行驶：
-
-```bash
-ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: true}"
-```
-
-应立即输出 ID 14，此后每约 60 秒一次。重复行驶状态、模式反馈或启动按钮不应额外播报或重置周期；无需发送启动按钮，也无需 D 挡。观察 `/ad_mode_req` 时，远程模式下发送 `mode_sw_cmd=true` 只能得到 false 请求。
-
-发送行驶状态 false 应取消循环；再次发送 true 立即重新开始。离开模式 2 应取消全部 ID 14 请求，再切入时重新开始：
-
-```bash
-ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: false}"
-ros2 topic pub --once /veh_mode_st std_msgs/msg/Int32 "{data: 0}"
-ros2 topic pub --once /veh_mode_st std_msgs/msg/Int32 "{data: 2}"
-```
-
-如要验证切入时已在行驶，两次模式切换前先置 `veh_running_st=true`；切入只应发一条 ID 14。也可不发送任何行驶状态直接切入，此时只应发一次切入提示，不启动循环。
-
-验证 P0 阻塞，可在切入前注入正数故障并确认行驶状态，让 ID 15 或 ID 16 生效。切入提示在不足 10 秒清除故障后应补发，达到 10 秒后清除则丢弃本轮；行驶循环下一轮仍基于原定 60 秒时刻。精确边界和请求合并由可控时间测试覆盖。测试结束发送 `alarm_diag_st=0` 清除故障。
-
-## 低电量提示手动验证
-
-重启节点，在另一个终端观察 `/voice_broadcast_id`。第三个终端清除其他 P0，提供静止和低电量反馈，再进入自动模式：
-
-```bash
-source /opt/ros/humble/setup.bash
-ros2 topic pub --once /alarm_diag_st std_msgs/msg/Int32 "{data: 0}"
-ros2 topic pub --once /obs_detect_st std_msgs/msg/Bool "{data: false}"
-ros2 topic pub --once /pedestrian_cross_st std_msgs/msg/Bool "{data: false}"
-ros2 topic pub --once /veh_turn_st std_msgs/msg/Int32 "{data: 0}"
-ros2 topic pub --once /veh_gear_st std_msgs/msg/Int32 "{data: 0}"
-ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: false}"
-ros2 topic pub --once /battery_low_power_st std_msgs/msg/Bool "{data: true}"
-ros2 topic pub --once /veh_mode_st std_msgs/msg/Int32 "{data: 1}"
-```
-
-未启动时不应有 ID 17。发送启动按钮：
-
-```bash
-ros2 topic pub --once /mode_sw_cmd std_msgs/msg/Bool "{data: true}"
-```
-
-应立即输出一次 ID 17，约 10 秒后再输出一次，此后不再重复。重复发送启动按钮 true、静止或低电量反馈不应增加次数或改变间隔。若启动时先提供低电量 false，再在行驶前改为 true，也应从反馈完整时刻开始两次提示。
-
-验证启动时两种反馈都未收到：重启节点，仅发送 `veh_mode_st=1` 和 `mode_sw_cmd=true`。即使等待超过 10 秒，也应保留触发窗口，不输出 ID 17。之后分别发送 `battery_low_power_st=true` 和 `veh_running_st=false`，顺序任意；仅收到其中一项时不播报，补齐后立即发送第一次，再过至少 10 秒发送第二次。若先收到 `veh_running_st=true`，则本次窗口关闭，之后才收到低电量或停车反馈也不补触发。
-
-要验证取消，先发停止按钮 false，再发 true 建立新任务，第一次 ID 17 后立即发送行驶状态 true：
-
-```bash
-ros2 topic pub --once /mode_sw_cmd std_msgs/msg/Bool "{data: false}"
-ros2 topic pub --once /mode_sw_cmd std_msgs/msg/Bool "{data: true}"
-ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: true}"
-```
-
-第二次 ID 17 应取消。随后发送静止状态不应重新触发；必须停止并重新启动。首次发送后将低电量改为 false，或退出自动模式，也应取消第二次请求：
-
-```bash
-ros2 topic pub --once /battery_low_power_st std_msgs/msg/Bool "{data: false}"
-```
-
-验证 P0 阻塞，可在静止、低电量且启动前置 `alarm_diag_st=1`。此时 ID 16 优先，低电量任务保留；故障清零后发送第一次 ID 17，再过至少 10 秒发送第二次。第二次到期前再注入故障，则在清除后延迟发送第二次，不集中补发。精确时间边界由可控时间测试覆盖。
-
-## 装卸货提示手动验证
-
-重启节点，在另一个终端观察 `/voice_broadcast_id`。无需发送自动模式或启动按钮。第三个终端在无故障、无其他提示的条件下依次注入到站、N 挡、EPB 状态：
-
-```bash
-source /opt/ros/humble/setup.bash
 ros2 topic pub --once /veh_arrive_st std_msgs/msg/Bool "{data: true}"
 ros2 topic pub --once /veh_gear_st std_msgs/msg/Int32 "{data: 2}"
+```
+
+**观察：**终端 2 暂无输出，因为还缺 EPB 拉起条件。
+
+**第 2 步｜终端 3：**补齐 EPB 拉起状态。
+
+
+```bash
 ros2 topic pub --once /veh_epb_st std_msgs/msg/Bool "{data: true}"
 ```
 
-三项齐全后应先输出一次 ID 3，后续调度再输出一次 ID 4；到达顺序可以改变。每条消息是一项独立请求，节点不等待音频播放完成。最后一条命令仅用于测试已授权的临时 EPB 协议，不能作为真实 EPB 已拉起的证明。重复消息、释放再拉起 EPB、换挡后恢复 N 挡均不应重开本次到站机会。
+**第 3 步｜观察：**终端 2 应依次出现 `data: 3`、`data: 4`，各一次。两条可能很接近，请查看相邻的输出块。ID 3 和 ID 4 共用触发条件，因此同时看到另一条是正常行为。本节重点确认 ID 3“车辆已到达目的地请及时装卸货”。
 
-离站后再到站，应重新允许先 ID 3、后 ID 4，各一次：
+**第 4 步｜终端 3：**重复同一状态，再释放并拉起 EPB。
+
+
+```bash
+ros2 topic pub --once /veh_epb_st std_msgs/msg/Bool "{data: true}"
+ros2 topic pub --once /veh_epb_st std_msgs/msg/Bool "{data: false}"
+ros2 topic pub --once /veh_epb_st std_msgs/msg/Bool "{data: true}"
+```
+
+**观察：**不应新增 ID 3 或 ID 4；同一次到站的机会已经使用，条件反复满足不会重播。
+
+**第 5 步｜终端 3：**模拟离站后重新到站。
+
 
 ```bash
 ros2 topic pub --once /veh_arrive_st std_msgs/msg/Bool "{data: false}"
 ros2 topic pub --once /veh_arrive_st std_msgs/msg/Bool "{data: true}"
 ```
 
-验证阻塞与超时，可在新到站前先发送 `veh_running_st=false` 和 `alarm_diag_st=1`，使 ID 16 有效，再提供完整停靠条件。条件完整后不足 10 秒清除故障，应依次发送仍未超时的 ID 3、4；达到 10 秒后清除不应补播任何一条，重复完整条件也不重试。若只剩不足一个调度周期，可能只发出 ID 3 而 ID 4 超时。必须先发未到站，再发新到站才重开机会。
+**观察：**终端 2 应再次依次出现一次 ID 3、一次 ID 4。两条均从停靠条件齐全时起最多等待 10 秒；ID 3 发出不延长 ID 4 的期限。临时 EPB 输入仅模拟反馈，不代表节点执行了实际驻车。
 
-验证取消，可在两条 P2 被故障阻塞期间释放 EPB 或退出 N 挡，再恢复条件并清除故障；不应补播本次 ID 3、4。ID 3 已发而 ID 4 尚未发送时失去停靠条件，仅取消 ID 4，不重复 ID 3。驾驶模式或停止按钮变化不取消有效待播请求。遥控模式切入请求 ID 14 与这两条 P2 同时待播时，应依次输出 ID 14、3、4，每次调度一条且两条 P2 均未超时。
+### ID 4：提醒关闭箱门
 
-## 开锁成功提示手动验证
+**终端 1**：按通用准备重启节点。**终端 2**：保持语音观察命令运行；以下只核对本节开始后的新输出。
 
-重启节点，在另一个终端观察 `/voice_broadcast_id`。无需自动模式、启动按钮或停靠条件。第三个终端先发送未锁状态：
+**第 1 步｜终端 3：**发送到站和 N 挡，不发送自动模式或启动按钮。
+
 
 ```bash
-source /opt/ros/humble/setup.bash
+ros2 topic pub --once /veh_arrive_st std_msgs/msg/Bool "{data: true}"
+ros2 topic pub --once /veh_gear_st std_msgs/msg/Int32 "{data: 2}"
+```
+
+**观察：**终端 2 暂无输出，因为还缺 EPB 拉起条件。
+
+**第 2 步｜终端 3：**补齐 EPB 拉起状态。
+
+
+```bash
+ros2 topic pub --once /veh_epb_st std_msgs/msg/Bool "{data: true}"
+```
+
+**第 3 步｜观察：**终端 2 应依次出现 `data: 3`、`data: 4`，各一次。两条可能很接近，请查看相邻的输出块。ID 3 和 ID 4 共用触发条件，因此同时看到另一条是正常行为。本节重点确认 ID 4“装、卸货完成后请关闭箱门，谢谢”，且它排在 ID 3 之后。
+
+**第 4 步｜终端 3：**重复同一状态，再释放并拉起 EPB。
+
+
+```bash
+ros2 topic pub --once /veh_epb_st std_msgs/msg/Bool "{data: true}"
+ros2 topic pub --once /veh_epb_st std_msgs/msg/Bool "{data: false}"
+ros2 topic pub --once /veh_epb_st std_msgs/msg/Bool "{data: true}"
+```
+
+**观察：**不应新增 ID 3 或 ID 4；同一次到站的机会已经使用，条件反复满足不会重播。
+
+**第 5 步｜终端 3：**模拟离站后重新到站。
+
+
+```bash
+ros2 topic pub --once /veh_arrive_st std_msgs/msg/Bool "{data: false}"
+ros2 topic pub --once /veh_arrive_st std_msgs/msg/Bool "{data: true}"
+```
+
+**观察：**终端 2 应再次依次出现一次 ID 3、一次 ID 4。两条均从停靠条件齐全时起最多等待 10 秒；ID 3 发出不延长 ID 4 的期限。临时 EPB 输入仅模拟反馈，不代表节点执行了实际驻车。
+
+### ID 5：开锁成功
+
+**终端 1**：按通用准备重启节点。**终端 2**：保持语音观察命令运行；以下只核对本节开始后的新输出。
+
+**第 1 步｜终端 3：**先发送未锁状态，不发送模式或启动按钮。
+
+
+```bash
 ros2 topic pub --once /trunk_lock_st std_msgs/msg/Bool "{data: false}"
 ```
 
-这只是首次状态反馈，不应输出 ID 5。随后依次模拟上锁、开锁：
+**观察：**终端 2 无输出，首次 false 只是初始化。
+
+**第 2 步｜终端 3：**发送上锁后再未锁。
+
 
 ```bash
 ros2 topic pub --once /trunk_lock_st std_msgs/msg/Bool "{data: true}"
 ros2 topic pub --once /trunk_lock_st std_msgs/msg/Bool "{data: false}"
 ```
 
-应仅在 true→false 时请求一次 ID 5。重复发送 false 不重播；再次 true→false 才产生新的 ID 5。以上命令仅模拟锁状态，不执行实际门锁控制。
+**观察：**终端 2 应立即出现一次 `data: 5`。
 
-验证阻塞可先发送静止状态和正数故障，使 ID 16 有效，再模拟 true→false。转换后不足 3 秒清除故障应补发 ID 5，达到 3 秒后清除不应补发；重复 false 不重试。锁状态在等待期间恢复 true 应取消旧请求。命令行与 DDS 有调度延迟，精确边界以可控时间测试为准。
+**第 3 步｜终端 3：**重复未锁反馈。
 
-P2 同时待播时应按 5、3、4 顺序请求；需要在测试中让三项在同次调度成为待播，或先用 P0 阻塞并在各自期限内解除。三条不会相互延长期限：ID 5 可在 3 秒时丢弃而到站两条仍有效，也可能较晚的 ID 5 先发出而到站两条随后达到原 10 秒期限被丢弃。
-
-## 装卸货完成确认提示 ID 2 手动验证
-
-重启节点并观察 `/voice_broadcast_id`，无需进入自动模式或提供到站条件。先收到 false 仅初始化，不应产生 ID 5，也不应开始 ID 2 计时。随后模拟真实的上锁→开锁事件：
 
 ```bash
-source /opt/ros/humble/setup.bash
-ros2 topic pub --once /trunk_lock_st std_msgs/msg/Bool "{data: false}"
-ros2 topic pub --once /trunk_lock_st std_msgs/msg/Bool "{data: true}"
 ros2 topic pub --once /trunk_lock_st std_msgs/msg/Bool "{data: false}"
 ```
 
-最后一条反馈触发一次 ID 5；从该事件起第 60、120、180 秒应分别请求一次 ID 2，之后持续未锁也没有第四轮。中途重复 false 不改变到期时刻，模式、按钮、到站、挡位、EPB 和行驶状态也不取消任务。命令仅模拟状态，不执行门锁控制。
+**观察：**不应再出现 ID 5。若再次发送 true 后 false，则允许再出现一次 ID 5。每次真实转换同时启动 ID 2 的 60/120/180 秒提醒，长时间观察时可能看到 ID 2。
 
-任意时刻重新上锁，应取消本组剩余提醒；再次开锁从新事件重新计时：
+**第 4 步｜终端 3：**完成测试后上锁，取消尚未到期的 ID 2。
+
 
 ```bash
 ros2 topic pub --once /trunk_lock_st std_msgs/msg/Bool "{data: true}"
-ros2 topic pub --once /trunk_lock_st std_msgs/msg/Bool "{data: false}"
 ```
 
-验证阻塞时，在某轮到期前发送静止和故障状态，使 ID 16 持续占用：
+本功能只用已知锁状态 true→false 近似开锁成功，不控制门锁、不识别 APP 点击来源。ID 5 若被高优先任务阻塞，最多等待 3 秒。
+
+### ID 6：车辆起步
+
+**终端 1**：按通用准备重启节点。**终端 2**：保持语音观察命令运行；以下只核对本节开始后的新输出。
+
+**第 1 步｜终端 3：**进入自动模式并启动，提供静止及一条旧高速反馈。这里故意用 8.0 验证旧车速不会取消下一次起步。
 
 ```bash
-ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: false}"
-ros2 topic pub --once /alarm_diag_st std_msgs/msg/Int32 "{data: 1}"
-```
-
-在本轮到期后不足 10 秒时清除故障，应发送尚有效的 ID 2；达到 10 秒后清除应丢弃该轮，下一轮仍按开锁后的原定时刻到期：
-
-```bash
-ros2 topic pub --once /alarm_diag_st std_msgs/msg/Int32 "{data: 0}"
-```
-
-若故障在开锁时已有效并持续超过 3 秒，ID 5 可超时，但 ID 2 仍按该开锁事件的第 60、120、180 秒执行。P1 同时有效时应按 1→6→13→2→14→7 逐次请求，其他请求原期限不变。DDS 与命令行存在调度延迟，精确秒数和超时边界以可控时间测试为准，无需实际等待三分钟。
-
-## 箱门未关闭提示 ID 1 手动验证
-
-重启节点，观察 `/voice_broadcast_id`，并在命令终端加载环境。以下首次未锁反馈不会产生 ID 2/5 开锁事件：
-
-```bash
-source /opt/ros/humble/setup.bash
-ros2 topic pub --once /veh_mode_st std_msgs/msg/Int32 "{data: 1}"
-ros2 topic pub --once /mode_sw_cmd std_msgs/msg/Bool "{data: true}"
-ros2 topic pub --once /trunk_lock_st std_msgs/msg/Bool "{data: false}"
-```
-
-从最后一条命令的接收处理时刻起，等待 10 秒后应请求一次 ID 1，此后每 10 秒一次。也可先提供未锁反馈再启动，以条件补齐时刻为起点。只启动而未收到锁反馈时不得触发。重复 false 或启动 true 不改变周期；车辆开始行驶也不取消。测试应先清除其他 P0 及低电量标志。
-
-上锁应立即取消 ID 1；在同次启动授权内再次未锁会同时产生 ID 5 开锁提示并启动 ID 2 三轮任务，而 ID 1 重新等待 10 秒首轮：
-
-```bash
-ros2 topic pub --once /trunk_lock_st std_msgs/msg/Bool "{data: true}"
-ros2 topic pub --once /trunk_lock_st std_msgs/msg/Bool "{data: false}"
-```
-
-停止或退出自动模式也应取消 ID 1；重新进入自动模式须重新启动，条件完整后重新等待 10 秒。以上命令模拟锁状态，不证明实际箱门开闭，也不控制门锁。
-
-验证阻塞，在某轮到期前使故障提示有效：
-
-```bash
-ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: false}"
-ros2 topic pub --once /alarm_diag_st std_msgs/msg/Int32 "{data: 1}"
-```
-
-从该轮原定到期时刻起，不足 3 秒时清除故障应发送 ID 1；达到 3 秒则丢弃，下一轮仍保持原 10 秒时间轴：
-
-```bash
-ros2 topic pub --once /alarm_diag_st std_msgs/msg/Int32 "{data: 0}"
-```
-
-命令行和 DDS 存在延迟，精确边界用可控时间测试验证。其他 P1 同时有效时遵循 1→6→13→2→14→7；ID 1 要求自动模式，ID 14 要求遥控模式，因此两者正常情况下不会同时有效。
-
-## 车辆起步提示 ID 6 手动验证
-
-重启节点，运行 `/voice_broadcast_id` 观察终端；另一个终端发送以下反馈。保留节点默认 P 挡，不要求到站或 EPB；不发箱门未锁、故障、障碍物、转弯等状态，以避免其他语音干扰：
-
-```bash
-source /opt/ros/humble/setup.bash
 ros2 topic pub --once /veh_mode_st std_msgs/msg/Int32 "{data: 1}"
 ros2 topic pub --once /mode_sw_cmd std_msgs/msg/Bool "{data: true}"
 ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: false}"
+ros2 topic pub --once /veh_speed_st std_msgs/msg/Float32 "{data: 8.0}"
+```
+
+**观察：**终端 1 有 `ad_mode_req=true`，终端 2 暂无 ID 6；静止时的车速反馈不能触发起步提示。
+
+**第 2 步｜终端 3：**将下面两条命令整块复制并连续执行：先发送行驶 true，再于起步后不足 3 秒发送新的低速值。不要在两条命令之间停下来观察。
+
+```bash
+ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: true}"
 ros2 topic pub --once /veh_speed_st std_msgs/msg/Float32 "{data: 1.0}"
+```
+
+**观察：**仅行驶反馈本身不使用缓存的 8.0；收到新的 1.0 后，终端 2 出现一次 `data: 6`，说明旧高速没有错误取消任务。本例不设 D 挡，不触发 ID 7，也不提供箱门反馈，不触发 ID 1。
+
+**第 3 步｜终端 3：**重复相同行驶和车速反馈。
+
+```bash
+ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: true}"
+ros2 topic pub --once /veh_speed_st std_msgs/msg/Float32 "{data: 1.0}"
+```
+
+**观察：**不新增 ID 6，同次行驶不重播。然后重新停车、起步，这次先不补车速：
+
+```bash
+ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: false}"
 ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: true}"
 ```
 
-在最后一条静止→行驶反馈处，应请求一次 ID 6。重复 true 或车速反馈不重播；重新发 false 后再 true 应产生下一次 ID 6。临时车速命令仅模拟外部状态，不控制车辆。
-
-验证车速延迟：重启节点，不发送任何车速，先静止再行驶，确认没有 ID 6；从行驶边沿起不足 3 秒提供 `data: 1.0` 可请求一次，达到 3 秒后提供则不得补播。若设置 D 挡，等待车速时应允许 ID 7 按原规则先发，车速补齐后再发尚未超时的 ID 6。命令行和 DDS 存在延迟，精确边界用可控时间测试。
-
-验证边界与取消：起步时 `data: 5.0` 或更高不请求，随后降低车速也不重试。首次反馈直接为行驶、未启动或非自动模式不触发。负数及非有限车速不能触发；后续有效值仍受原 3 秒期限限制。
-
-验证阻塞，可在静止后、起步前注入故障或转弯 P0：
+**观察：**即使缓存里仍有低速 1.0，也不应出现 ID 6。等待至少 4 秒，让原 3 秒期限结束，再发送：
 
 ```bash
-ros2 topic pub --once /veh_turn_st std_msgs/msg/Int32 "{data: 1}"
+ros2 topic pub --once /veh_speed_st std_msgs/msg/Float32 "{data: 1.0}"
+```
+
+**观察：**过期后不补发；新消息不会重新开启已经结束的起步任务。
+
+**第 4 步｜终端 3：**验证同一数值重新发布也算新反馈。整块复制并连续执行：
+
+```bash
+ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: false}"
 ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: true}"
+ros2 topic pub --once /veh_speed_st std_msgs/msg/Float32 "{data: 1.0}"
+```
+
+**观察：**终端 2 再出现一次 ID 6。最后的 1.0 虽然与缓存相同，但它在本次起步之后重新收到，因此有效。不是靠数值是否变化来识别新反馈。
+
+**第 5 步｜终端 3：**验证新高速会取消本次机会。整块连续执行，注意车速 5.0 必须位于起步反馈之后：
+
+```bash
+ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: false}"
+ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: true}"
+ros2 topic pub --once /veh_speed_st std_msgs/msg/Float32 "{data: 5.0}"
+ros2 topic pub --once /veh_speed_st std_msgs/msg/Float32 "{data: 1.0}"
+```
+
+**观察：**本组不新增 ID 6；新车速≥5 已取消本次任务，随后减速也不重试。首次行驶反馈直接为 true，同样不构造起步事件。
+
+车速接口为已授权临时协议，单位 km/h；条件为新反馈有效且 0≤车速<5。负数及非有限值不能触发，可在原期限内由后续有效新反馈补齐。停车、停止或退出自动模式也会取消待播。CLI 存在延迟，如果连续命令耗时已经达到 3 秒，可能正常超时；精确边界请用可控时间测试。
+
+### ID 7：自动驾驶前进
+
+**终端 1**：按通用准备重启节点。**终端 2**：保持语音观察命令运行；以下只核对本节开始后的新输出。
+
+**第 1 步｜终端 3：**先提供 D 挡和行驶状态，再进入自动模式，暂不启动。
+
+
+```bash
+ros2 topic pub --once /veh_gear_st std_msgs/msg/Int32 "{data: 3}"
+ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: true}"
+ros2 topic pub --once /veh_mode_st std_msgs/msg/Int32 "{data: 1}"
+```
+
+**观察：**终端 2 无输出；未取得启动授权不能发送 ID 7。首次行驶反馈直接为 true，也不会触发 ID 6。
+
+**第 2 步｜终端 3：**发送启动按钮。
+
+
+```bash
+ros2 topic pub --once /mode_sw_cmd std_msgs/msg/Bool "{data: true}"
+```
+
+**观察：**终端 1 出现 `ad_mode_req=true`，终端 2 立即出现 `data: 7`，之后每约 120 秒一次。要验证第二次，需要保持状态并等待约 2 分钟。
+
+**第 3 步｜终端 3：**在首轮后重复行驶、D 挡、启动反馈。
+
+
+```bash
+ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: true}"
+ros2 topic pub --once /veh_gear_st std_msgs/msg/Int32 "{data: 3}"
+ros2 topic pub --once /mode_sw_cmd std_msgs/msg/Bool "{data: true}"
+```
+
+**观察：**不额外立即发送，也不重置下一轮时间。
+
+**第 4 步｜终端 3：**切入 N 挡。
+
+
+```bash
+ros2 topic pub --once /veh_gear_st std_msgs/msg/Int32 "{data: 2}"
+```
+
+**观察：**之后不再新增 ID 7。重新挂 D 挡：
+
+
+```bash
+ros2 topic pub --once /veh_gear_st std_msgs/msg/Int32 "{data: 3}"
+```
+
+**观察：**立即再次出现 ID 7，并从此刻开始新一轮 120 秒周期。发送停止按钮可结束本例：
+
+
+```bash
+ros2 topic pub --once /mode_sw_cmd std_msgs/msg/Bool "{data: false}"
+```
+
+终端 1 应显示 `ad_mode_req=false`；终端 2 不再新增 ID 7。P0 阻塞时 ID 7 每轮最多等待 10 秒，延迟或丢弃不改变原定周期。
+
+### ID 8：障碍物提示
+
+**终端 1**：按通用准备重启节点。**终端 2**：保持语音观察命令运行；以下只核对本节开始后的新输出。
+
+**第 1 步｜终端 3：**提供有障碍物状态并进入自动模式，暂不启动。
+
+
+```bash
+ros2 topic pub --once /obs_detect_st std_msgs/msg/Bool "{data: true}"
+ros2 topic pub --once /veh_mode_st std_msgs/msg/Int32 "{data: 1}"
+```
+
+**观察：**终端 2 无输出。
+
+**第 2 步｜终端 3：**发送启动按钮。
+
+
+```bash
+ros2 topic pub --once /mode_sw_cmd std_msgs/msg/Bool "{data: true}"
+```
+
+**观察：**终端 2 立即出现 `data: 8`，之后每约 5 秒一次。观察至少 12 秒，应能看到首轮和后续周期。本例不设 D 挡及行驶条件，以免引入 ID 7。
+
+**第 3 步｜终端 3：**重复障碍物状态。
+
+
+```bash
+ros2 topic pub --once /obs_detect_st std_msgs/msg/Bool "{data: true}"
+```
+
+**观察：**不额外立即发送，不重置周期。随后清除障碍物：
+
+
+```bash
+ros2 topic pub --once /obs_detect_st std_msgs/msg/Bool "{data: false}"
+```
+
+**观察：**之后至少 6 秒不再新增 ID 8。再发 true 可立即恢复；按停止按钮或退出自动模式也会停止。这里用“检测到障碍物”近似需要避让，无法确认实际绕行过程。
+
+### ID 9：右转弯
+
+**终端 1**：按通用准备重启节点。**终端 2**：保持语音观察命令运行；以下只核对本节开始后的新输出。
+
+**第 1 步｜终端 3：**先提供转弯状态并进入自动模式，暂不启动。
+
+
+```bash
+ros2 topic pub --once /veh_turn_st std_msgs/msg/Int32 "{data: 2}"
+ros2 topic pub --once /veh_mode_st std_msgs/msg/Int32 "{data: 1}"
+```
+
+**观察：**终端 2 无输出。
+
+**第 2 步｜终端 3：**发送启动按钮。
+
+
+```bash
+ros2 topic pub --once /mode_sw_cmd std_msgs/msg/Bool "{data: true}"
+```
+
+**观察：**终端 1 有 `ad_mode_req=true`；终端 2 立即出现 `data: 9`，此后每约 5 秒一次。至少观察 12 秒，确认有周期输出。
+
+**第 3 步｜终端 3：**重复同一转弯状态。
+
+
+```bash
+ros2 topic pub --once /veh_turn_st std_msgs/msg/Int32 "{data: 2}"
+```
+
+**观察：**不额外立即发送，也不重置周期。随后恢复直行：
+
+
+```bash
 ros2 topic pub --once /veh_turn_st std_msgs/msg/Int32 "{data: 0}"
 ```
 
-在有效车速已低于 5 的前提下，不足 3 秒解除可请求 ID 6，达到 3 秒则丢弃；P0 请求间隙也不能插播。阻塞期间停车、停止、退出自动模式或反馈车速≥5 均取消。取消后重复行驶反馈或降速不重试，须重新停车再起步。
+**观察：**之后至少 6 秒不再新增 ID 9。再次发送本节转弯状态应立即恢复；停止按钮 false 或退出自动模式也会结束该提示。
 
-## 等红绿灯提示 ID 13 手动验证
+### ID 10：左转弯
 
-重启节点，观察 `/voice_broadcast_id`。在命令终端发送白天等灯条件，不需要到站、EPB 或指定挡位：
+**终端 1**：按通用准备重启节点。**终端 2**：保持语音观察命令运行；以下只核对本节开始后的新输出。
+
+**第 1 步｜终端 3：**先提供转弯状态并进入自动模式，暂不启动。
+
 
 ```bash
-source /opt/ros/humble/setup.bash
+ros2 topic pub --once /veh_turn_st std_msgs/msg/Int32 "{data: 1}"
+ros2 topic pub --once /veh_mode_st std_msgs/msg/Int32 "{data: 1}"
+```
+
+**观察：**终端 2 无输出。
+
+**第 2 步｜终端 3：**发送启动按钮。
+
+
+```bash
+ros2 topic pub --once /mode_sw_cmd std_msgs/msg/Bool "{data: true}"
+```
+
+**观察：**终端 1 有 `ad_mode_req=true`；终端 2 立即出现 `data: 10`，此后每约 5 秒一次。至少观察 12 秒，确认有周期输出。
+
+**第 3 步｜终端 3：**重复同一转弯状态。
+
+
+```bash
+ros2 topic pub --once /veh_turn_st std_msgs/msg/Int32 "{data: 1}"
+```
+
+**观察：**不额外立即发送，也不重置周期。随后恢复直行：
+
+
+```bash
+ros2 topic pub --once /veh_turn_st std_msgs/msg/Int32 "{data: 0}"
+```
+
+**观察：**之后至少 6 秒不再新增 ID 10。再次发送本节转弯状态应立即恢复；停止按钮 false 或退出自动模式也会结束该提示。
+
+### ID 11：行人礼让
+
+**终端 1**：按通用准备重启节点。**终端 2**：保持语音观察命令运行；以下只核对本节开始后的新输出。
+
+**第 1 步｜终端 3：**启用自动模式并提供行人横穿状态，暂不发送车辆静止反馈。
+
+
+```bash
+ros2 topic pub --once /veh_mode_st std_msgs/msg/Int32 "{data: 1}"
+ros2 topic pub --once /mode_sw_cmd std_msgs/msg/Bool "{data: true}"
+ros2 topic pub --once /pedestrian_cross_st std_msgs/msg/Bool "{data: true}"
+```
+
+**观察：**终端 2 无输出；没有收到行驶状态时，不能把未知状态当成静止。
+
+**第 2 步｜终端 3：**补齐静止反馈。
+
+
+```bash
+ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: false}"
+```
+
+**观察：**终端 2 立即出现 `data: 11`，之后每约 5 秒一次，至少观察 12 秒。重复行人或静止反馈不额外触发，也不重置周期。
+
+**第 3 步｜终端 3：**清除行人状态。
+
+
+```bash
+ros2 topic pub --once /pedestrian_cross_st std_msgs/msg/Bool "{data: false}"
+```
+
+**观察：**之后至少 6 秒不再新增 ID 11。再发 true 可恢复，车辆开始行驶也会取消礼让提示。现有信号只能确认有行人且静止，不能单独证明斑马线位置或停车原因。
+
+**第 4 步｜终端 3：**如要验证启动授权，先重新提供行人，再按停止按钮。
+
+
+```bash
+ros2 topic pub --once /pedestrian_cross_st std_msgs/msg/Bool "{data: true}"
+ros2 topic pub --once /mode_sw_cmd std_msgs/msg/Bool "{data: false}"
+```
+
+终端 2 在行人 true 时可出现一条 ID 11，但停止后不再新增；终端 1 显示 `ad_mode_req=false`。
+
+### ID 12：倒车
+
+**终端 1**：按通用准备重启节点。**终端 2**：保持语音观察命令运行；以下只核对本节开始后的新输出。
+
+**第 1 步｜终端 3：**启用自动模式后挂 R 挡。
+
+
+```bash
+ros2 topic pub --once /veh_mode_st std_msgs/msg/Int32 "{data: 1}"
+ros2 topic pub --once /mode_sw_cmd std_msgs/msg/Bool "{data: true}"
+ros2 topic pub --once /veh_gear_st std_msgs/msg/Int32 "{data: 1}"
+```
+
+**观察：**终端 2 立即出现 `data: 12`，之后每约 5 秒一次；不需要发送行驶状态，挂 R 挡本身即可建立场景。
+
+**第 2 步｜终端 3：**重复 R 挡反馈。
+
+
+```bash
+ros2 topic pub --once /veh_gear_st std_msgs/msg/Int32 "{data: 1}"
+```
+
+**观察：**不额外立即发送，不重置周期。随后换 N 挡：
+
+
+```bash
+ros2 topic pub --once /veh_gear_st std_msgs/msg/Int32 "{data: 2}"
+```
+
+**观察：**之后至少 6 秒不再新增 ID 12。再次挂 R 挡：
+
+
+```bash
+ros2 topic pub --once /veh_gear_st std_msgs/msg/Int32 "{data: 1}"
+```
+
+应立即恢复 ID 12。若换 D 挡且已经确认行驶，会改为触发 ID 7；本例选择 N 挡退出，便于只观察倒车提示是否结束。
+
+### ID 13：等红绿灯
+
+**终端 1**：按通用准备重启节点。**终端 2**：保持语音观察命令运行；以下只核对本节开始后的新输出。
+
+**第 1 步｜终端 3：**提供自动启动、静止和等灯状态，暂不提供光照。
+
+
+```bash
 ros2 topic pub --once /veh_mode_st std_msgs/msg/Int32 "{data: 1}"
 ros2 topic pub --once /mode_sw_cmd std_msgs/msg/Bool "{data: true}"
 ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: false}"
-ros2 topic pub --once /ambient_light_level_st std_msgs/msg/Float64 "{data: 6.0}"
 ros2 topic pub --once /traffic_light_wait_st std_msgs/msg/Bool "{data: true}"
 ```
 
-条件齐全立即请求 ID 13，此后每 10 秒一次；输入顺序可改变，重复状态不重新计时。暂不发光照时应保持等待，补齐有效值才播报；仅静止而没有等灯状态也不应触发。命令仅模拟已授权的临时等灯状态，不控制车辆或交通信号。
+**观察：**终端 2 无输出，因为昼夜尚未确定。普通静止不等于正在等灯，必须明确提供等灯状态。
 
-将光照切为 5.0，恰好边界按夜间处理。本次白天已发过 ID 13，因此停止循环且不额外提示：
+**第 2 步｜终端 3：**发送白天光照。
+
+
+```bash
+ros2 topic pub --once /ambient_light_level_st std_msgs/msg/Float64 "{data: 6.0}"
+```
+
+**观察：**终端 2 立即出现 `data: 13`，此后每约 10 秒一次。重复光照、等灯或静止反馈不重置周期。
+
+**第 3 步｜终端 3：**改成恰好为 5 的光照，切入夜间。
+
 
 ```bash
 ros2 topic pub --once /ambient_light_level_st std_msgs/msg/Float64 "{data: 5.0}"
 ```
 
-在夜间退出等待并重新进入，应只提示一次；继续夜间等待不循环：
+**观察：**停止白天循环，之后至少 12 秒没有新增 ID 13；本次等待已经发过提示，因此切入夜间不额外提示。
+
+**第 4 步｜终端 3：**在夜间退出等待，再重新等灯。
+
 
 ```bash
 ros2 topic pub --once /traffic_light_wait_st std_msgs/msg/Bool "{data: false}"
 ros2 topic pub --once /traffic_light_wait_st std_msgs/msg/Bool "{data: true}"
 ```
 
-恢复光照 6.0 时，应立即开始新的白天首轮和 10 秒循环。负数或非有限数不能覆盖上次有效昼夜；重启后一直提供非法值则不能播报。
+**观察：**立即出现一次 `data: 13`，继续观察至少 12 秒，不应出现第二次。要恢复白天循环，发送：
 
-验证阻塞，在建立新等待任务前用静止故障占用 P0：
+
+```bash
+ros2 topic pub --once /ambient_light_level_st std_msgs/msg/Float64 "{data: 6.0}"
+```
+
+**观察：**立即出现 ID 13，并从这次恢复白天的时刻重新每 10 秒循环。结束等待：
+
 
 ```bash
 ros2 topic pub --once /traffic_light_wait_st std_msgs/msg/Bool "{data: false}"
+```
+
+**观察：**之后至少 12 秒不再新增 ID 13。停止、退出自动模式或开始行驶也会取消等待任务。
+
+光照 ≤5 为夜间、>5 为白天；阈值由用户暂定，待后续文档同步，文档未定义光照单位。负数及非有限值忽略，保留之前的有效判断。每轮被阻塞最多等待 3 秒；夜间超时不重试，白天仍按原定 10 秒时间轴继续。
+
+### ID 14：远程/遥控驾驶
+
+**终端 1**：按通用准备重启节点。**终端 2**：保持语音观察命令运行；以下只核对本节开始后的新输出。
+
+**第 1 步｜终端 3：**先确认静止，再切入遥控模式；不发启动按钮。
+
+
+```bash
+ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: false}"
+ros2 topic pub --once /veh_mode_st std_msgs/msg/Int32 "{data: 2}"
+```
+
+**观察：**终端 2 立即出现一次 `data: 14`。保持静止超过 60 秒，不应循环发送；这是切入遥控模式的一次提示。终端 1 的 `ad_mode_req=false` 是正常的，因为本例不请求自动驾驶。
+
+**第 2 步｜终端 3：**模拟开始行驶。
+
+
+```bash
+ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: true}"
+```
+
+**观察：**终端 2 立即再出现 ID 14，此后每约 60 秒一次。无需 D 挡，也无需启动授权。重复 true 或模式 2 不额外提示，不重置周期。
+
+**第 3 步｜终端 3：**发送停车反馈。
+
+
+```bash
+ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: false}"
+```
+
+**观察：**之后超过 60 秒不再新增 ID 14。再次发 true 可立即重新开始行驶循环。
+
+**第 4 步｜终端 3：**验证遥控模式下启动按钮不会产生自动驾驶请求。
+
+
+```bash
+ros2 topic pub --once /mode_sw_cmd std_msgs/msg/Bool "{data: true}"
+```
+
+**观察：**终端 1 仍显示 `ad_mode_req=false`，终端 2 不因按钮额外出现 ID 14。退出再切入模式：
+
+
+```bash
+ros2 topic pub --once /veh_mode_st std_msgs/msg/Int32 "{data: 0}"
+ros2 topic pub --once /veh_mode_st std_msgs/msg/Int32 "{data: 2}"
+```
+
+**观察：**再次切入时出现一次 ID 14。切入和行驶首轮同时发生时合并为一条；P0 阻塞时每个请求最多等待 10 秒。
+
+### ID 15：行驶故障
+
+**终端 1**：按通用准备重启节点。**终端 2**：保持语音观察命令运行；以下只核对本节开始后的新输出。
+
+**第 1 步｜终端 3：**只提供故障，不进入自动模式。
+
+
+```bash
 ros2 topic pub --once /alarm_diag_st std_msgs/msg/Int32 "{data: 1}"
-ros2 topic pub --once /traffic_light_wait_st std_msgs/msg/Bool "{data: true}"
+```
+
+**观察：**终端 2 无输出，尚未收到车辆是否行驶的反馈。
+
+**第 2 步｜终端 3：**提供行驶状态。
+
+
+```bash
+ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: true}"
+```
+
+**观察：**终端 2 立即出现 `data: 15`，之后每约 5 秒一次；该提示不要求模式或启动授权。
+
+**第 3 步｜终端 3：**改为另一正数故障等级，并发送停止按钮。
+
+
+```bash
+ros2 topic pub --once /alarm_diag_st std_msgs/msg/Int32 "{data: 2}"
+ros2 topic pub --once /mode_sw_cmd std_msgs/msg/Bool "{data: false}"
+```
+
+**观察：**ID 15 继续原来的周期，不因等级变化额外立即提示，也不因停止按钮结束。随后模拟停车：
+
+
+```bash
+ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: false}"
+```
+
+**观察：**立即切换为 `data: 16`，之后每约 5 秒一次；再次发 true 则立即切回 ID 15。
+
+**第 4 步｜终端 3：**清除故障。
+
+
+```bash
 ros2 topic pub --once /alarm_diag_st std_msgs/msg/Int32 "{data: 0}"
 ```
 
-等待请求建立后不足 3 秒清除故障可发送，达到 3 秒则丢弃。白天下一轮仍按原 10 秒时间轴，夜间超时则本次不重试。白天待播期间切入夜间不延长原期限；夜间恢复白天则建立新阶段首轮。命令行和 DDS 有延迟，精确边界以可控时间测试为准。
+**观察：**之后至少 6 秒不再新增 ID 15 或 16。负数同样不视为已确认故障。节点只发语音请求，不会因该测试自动执行靠边或制动。
 
-停止、退出自动模式、等灯 false 或行驶 true 应取消剩余任务；再次具备条件才建立新等待。测试 ID 13 时应清除其他 P0 和低电量，避免被其持续占用。ID 6/7 要求行驶、ID 14 要求遥控模式，与 ID 13 的静止自动模式条件互斥；同次可就绪的 P1 以 1→13→2 验证顺序，其余由既有测试回归。
+### ID 16：故障停车
+
+**终端 1**：按通用准备重启节点。**终端 2**：保持语音观察命令运行；以下只核对本节开始后的新输出。
+
+**第 1 步｜终端 3：**只提供静止反馈，不进入自动模式。
+
+
+```bash
+ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: false}"
+```
+
+**观察：**终端 2 无输出，因为没有故障。
+
+**第 2 步｜终端 3：**提供正数故障。
+
+
+```bash
+ros2 topic pub --once /alarm_diag_st std_msgs/msg/Int32 "{data: 1}"
+```
+
+**观察：**终端 2 立即出现 `data: 16`，之后每约 5 秒一次。不需要此前出现过 ID 15。此处以“故障且静止”近似故障停车完成，无法确认实际靠边位置。
+
+**第 3 步｜终端 3：**重复静止、改故障等级并按停止按钮。
+
+
+```bash
+ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: false}"
+ros2 topic pub --once /alarm_diag_st std_msgs/msg/Int32 "{data: 2}"
+ros2 topic pub --once /mode_sw_cmd std_msgs/msg/Bool "{data: false}"
+```
+
+**观察：**ID 16 继续原周期，不额外立即提示。然后模拟行驶：
+
+
+```bash
+ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: true}"
+```
+
+**观察：**立即切为 ID 15；再发静止：
+
+
+```bash
+ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: false}"
+```
+
+**观察：**立即切回 ID 16，两次切换均从切换时刻重新计算 5 秒周期。
+
+**第 4 步｜终端 3：**清除故障。
+
+
+```bash
+ros2 topic pub --once /alarm_diag_st std_msgs/msg/Int32 "{data: 0}"
+```
+
+**观察：**之后至少 6 秒不再新增故障提示。模式切换或停止按钮不能代替故障清除。
+
+### ID 17：低电量
+
+**终端 1**：按通用准备重启节点。**终端 2**：保持语音观察命令运行；以下只核对本节开始后的新输出。
+
+**第 1 步｜终端 3：**先提供静止、低电量和自动模式，暂不启动。
+
+
+```bash
+ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: false}"
+ros2 topic pub --once /battery_low_power_st std_msgs/msg/Bool "{data: true}"
+ros2 topic pub --once /veh_mode_st std_msgs/msg/Int32 "{data: 1}"
+```
+
+**观察：**终端 2 无输出。
+
+**第 2 步｜终端 3：**发送启动按钮。
+
+
+```bash
+ros2 topic pub --once /mode_sw_cmd std_msgs/msg/Bool "{data: true}"
+```
+
+**观察：**终端 2 立即出现一次 `data: 17`，约 10 秒后再出现一次；继续观察至少 12 秒，不应有第三次。每次有效启动最多两次，重复 true 不增加次数。低电量标志应由上游按 SOC≤20% 提供，节点不计算 SOC。
+
+**第 3 步｜终端 3：**停止后重新启动，建立新的一组提示。
+
+
+```bash
+ros2 topic pub --once /mode_sw_cmd std_msgs/msg/Bool "{data: false}"
+ros2 topic pub --once /mode_sw_cmd std_msgs/msg/Bool "{data: true}"
+```
+
+**观察：**立即出现这组的第一次 ID 17。看到后，**在第二次到来前**到终端 3 发送行驶反馈：
+
+
+```bash
+ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: true}"
+```
+
+**观察：**之后至少 12 秒不出现该组第二次 ID 17。因本例未提供起步后的新车速，不会出现 ID 6；也未挂 D 挡，不会出现 ID 7。随后停车：
+
+
+```bash
+ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: false}"
+```
+
+**观察：**不自动重开低电量任务；必须再次有效启动才有新机会。停止、退出模式或任务开始后低电量标志变为 false，也会取消剩余请求。
+
+**补充｜验证反馈稍后到达：**在终端 1 重启节点，终端 2 继续观察。终端 3 先只执行：
+
+
+```bash
+ros2 topic pub --once /veh_mode_st std_msgs/msg/Int32 "{data: 1}"
+ros2 topic pub --once /mode_sw_cmd std_msgs/msg/Bool "{data: true}"
+```
+
+即使等待超过 10 秒，终端 2 也无 ID 17，但发车窗口仍在等待。然后执行：
+
+
+```bash
+ros2 topic pub --once /battery_low_power_st std_msgs/msg/Bool "{data: true}"
+```
+
+此时仍无输出，因为尚未确认静止。最后补齐：
+
+
+```bash
+ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: false}"
+```
+
+**观察：**立即请求第一次 ID 17，至少 10 秒后请求第二次。若补齐前已经收到行驶 true，本次窗口会关闭，之后停车不补触发。
+
+### 补充：按步骤验证高优先提示阻塞
+
+完成正常流程后，可单独选择一个 ID 验证阻塞。**每次独立实验仍从终端 1 重启节点开始，终端 2 保持监听，所有输入在终端 3 执行。**
+
+1. 先在终端 3 提供静止故障，使 ID 16 成为持续有效的 P0：
+
+```bash
+ros2 topic pub --once /veh_running_st std_msgs/msg/Bool "{data: false}"
+ros2 topic pub --once /alarm_diag_st std_msgs/msg/Int32 "{data: 1}"
+```
+
+2. 在终端 2 确认每约 5 秒出现 ID 16。接着按目标 ID 的步骤提供条件。即使 ID 16 两条消息之间有空隙，目标低优先提示也不应插入。测试 ID 6 时，静止→行驶后故障提示会变成 ID 15，但仍属于阻塞。
+3. 从目标请求的到期时刻开始计时，按下表选择在期限内或期限后清除故障。在终端 3 执行：
+
+```bash
+ros2 topic pub --once /alarm_diag_st std_msgs/msg/Int32 "{data: 0}"
+```
+
+| 目标 | 何时产生待播请求 | 等待期限 | 清除故障后的观察重点 |
+| --- | --- | --- | --- |
+| ID 1 | 条件齐全后每 10 秒到期，首轮也等 10 秒 | 3 秒 | 期限内可发本轮，过期跳过；下轮仍按原时间轴 |
+| ID 2 | 开锁后第 60、120、180 秒 | 10 秒 | 期限内可发，过期也计入三轮，不增加补偿轮 |
+| ID 3、4 | 到站、N 挡、EPB 齐全时 | 各 10 秒 | 期限内依次 3、4；ID 3 发出不延长 ID 4 的期限 |
+| ID 5 | 已知上锁→未锁时 | 3 秒 | 过期后重复未锁不重试，须重新上锁再开锁 |
+| ID 6 | 已知静止→行驶时 | 总计 3 秒 | 含等待起步后新车速时间；仍行驶且低于 5 才可发，过期不重试 |
+| ID 7 | 行驶、D 挡、自动已启动首轮及之后每 120 秒 | 10 秒 | 延迟/丢弃不改变下一轮周期 |
+| ID 13 | 白天首轮及每 10 秒，或唯一夜间请求 | 3 秒 | 白天下轮时间不变；夜间过期后本次不重试 |
+| ID 14 | 切入遥控模式或行驶循环到期 | 10 秒 | 切入和循环分别计时；循环维持原 60 秒时间轴 |
+| ID 17 | 有效启动后静止且低电量 | 无规定超时 | 清除后先发第一次，再至少间隔 10 秒发第二次；窗口必须仍有效 |
+
+4. 需要测试取消时，在清除故障前先发送该任务的取消条件。例如 ID 5 重新上锁、ID 3/4 释放 EPB、ID 13 等灯 false；随后再清除故障，观察不能补发已取消请求。
+
+手动操作只适合观察明显的期限内/期限外结果。不要把 CLI 命令执行耗时当成节点精确接收时间；3 秒和 10 秒边界、同次调度顺序、夜间超时、调度迟到等情况，以后面的可控时间逻辑测试为准。
+
+### 没有看到预期输出时
+
+1. 看终端 1：节点是否仍在运行，有没有异常退出？看终端 3 的 `ros2 node list` 是否含 `/body_control_node`。
+2. 看终端 2：是否一直运行 `ros2 topic echo /voice_broadcast_id`，且在发送触发消息前已经开始监听？观察命令不显示历史请求。
+3. 看终端 3：每条 `--once` 命令是否成功发送？若持续提示等待匹配订阅者，检查节点、话题拼写和三个终端的 ROS 环境是否一致。
+4. 看是否遗漏前置条件：自动模式不等于已启动；未知行驶状态不等于静止；首次未锁不等于开锁事件；ID 13 必须有有效光照和等灯状态。
+5. 若终端 2 持续出现 ID 15/16，说明故障正在抢占。若出现 ID 17，说明低电量任务正在执行。最简单的排查方式是终端 1 重启节点，再只执行目标 ID 的步骤；同时确认没有其他程序持续发布输入。
+6. 输入命令发送的是状态，不是车辆执行动作；只要终端收到编号而没有扬声器声音，并不表示本节点验证失败，音频播放需要下游模块。
 
 ## 逻辑测试
 
@@ -667,6 +1142,8 @@ ctest --output-on-failure
 
 `door_open_voice_test` 使用可控时间验证条件到达顺序、未知锁状态、首次等待 10 秒及重复输入、连续周期、上锁/停止/退出模式取消和重建、全部 P0 阻塞及 3 秒边界、低电量优先、行驶及其他车辆状态不取消、迟到跳过历史轮次、ID 1/2/7 同时待播顺序、其他请求原期限不变及 P1 优先于 P2。ID 14 与 ID 1 的模式条件互斥，其既有优先顺序由遥控和 ID 2 测试回归。
 
-`start_voice_test` 使用可控时间验证首次行驶不误报、每次静止→行驶事件、授权范围和不缓存、车速先到/后到/缺失、零值及 5 km/h 边界、负数和非有限数、3 秒边界、P0 间隙不插播、停车/升速/停止/模式退出取消、同次行驶不重试、P1 的 1→6→2→7 顺序和独立期限、无额外挡位/EPB/到站限制、车速等待不阻塞 ID 7/P2，以及行驶时低电量任务按原规则结束。ID 14 与 ID 6 的模式条件互斥，由原遥控测试继续回归。
+`start_voice_test` 使用可控时间验证首次行驶不误报、每次起步重新等待新反馈、旧高速不取消/旧低速不触发、相同数值及序号回绕的新反馈识别、无新反馈超时、新车速 0/5 边界及非法值补齐、P0 阻塞下原 3 秒期限、停车/新高速/停止/模式退出取消后不重试、原优先级 1→6→2→7、等待新车速不阻塞 ID 7/P2，以及行驶使低电量任务按原规则结束。
 
 `traffic_wait_voice_test` 使用可控时间覆盖五项启用条件的全部到达顺序、未知/非法光照、阈值 5 的边界及有效判断保留、白天立即首轮与固定 10 秒周期、重复状态与迟到轮次跳过、夜间单次、全部可共存 P0/低电量阻塞、3 秒边界、昼夜转换时期限保留或替换、夜间机会不重开、退出/行驶/停止/模式变化取消及重建，以及 1→13→2 和 P1/P2 优先及各自期限。全部测试不需真实等待。
+
+`automatic_voice_test` 覆盖模式 0/1/2/未知值与授权 true/false 的完整矩阵，确认所有自动相关模块只在自动且已启动时放行；异常模式与授权矛盾时也拒绝。验证故障、遥控、到站和开锁相关语音保留独立条件，以及准入失效后待播取消、重新有效准入后按原周期重建。

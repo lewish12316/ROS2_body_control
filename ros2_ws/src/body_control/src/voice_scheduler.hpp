@@ -15,7 +15,7 @@
 
 inline bool forward_voice_enabled(const VoiceSceneState & state)
 {
-  return state.veh_mode_st != 2 && state.auto_drive_enabled && state.running_state_received &&
+  return automatic_voice_enabled(state) && state.running_state_received &&
          state.vehicle_running && state.veh_gear_st == 3;
 }
 

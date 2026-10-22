@@ -16,6 +16,7 @@ int main()
   drive.set_start_command(true);
   assert(!drive.enabled());            // 非自动模式下启动无效。
   assert(drive.set_mode(1));
+  state.veh_mode_st = 1;
   assert(!drive.enabled());            // 先前启动命令不生效。
   drive.set_start_command(true);
   assert(drive.enabled());
@@ -73,20 +74,24 @@ int main()
   state.auto_drive_enabled = drive.enabled();
   assert(select_voice_id(state) == 11);  // 再启动，恢复当前场景。
   drive.set_mode(2);
+  state.veh_mode_st = 2;
   state.auto_drive_enabled = drive.enabled();
   assert(select_voice_id(state) == 0);   // 遥控接管关闭语音。
   drive.set_start_command(true);
   assert(!drive.enabled());
   drive.set_mode(1);
+  state.veh_mode_st = 1;
   assert(!drive.enabled());            // 再次进入自动模式仍需新启动命令。
   drive.set_start_command(true);
   assert(drive.enabled());
   drive.set_mode(99);
+  state.veh_mode_st = 99;
   assert(!drive.enabled());            // 未知模式也不允许启动。
   state.veh_gear_st = 1;
   state.auto_drive_enabled = drive.enabled();
   assert(select_voice_id(state) == 0);  // 退出自动模式禁止倒车提示。
   drive.set_mode(1);
+  state.veh_mode_st = 1;
   drive.set_start_command(true);
   state.auto_drive_enabled = drive.enabled();
   assert(select_voice_id(state) == 12);
@@ -97,6 +102,7 @@ int main()
   VoiceSceneState obstacle_state;
   obstacle_state.obs_detect_st = true;
   assert(select_voice_id(obstacle_state) == 0);  // 未启动不提示障碍物。
+  obstacle_state.veh_mode_st = 1;
   obstacle_state.auto_drive_enabled = true;
   assert(select_voice_id(obstacle_state) == 8);
   obstacle_state.obs_detect_st = false;
@@ -119,6 +125,7 @@ int main()
   obstacle_state.obs_detect_st = true;
   obstacle_state.auto_drive_enabled = false;
   assert(select_voice_id(obstacle_state) == 0);  // 停止或退出模式后不播报。
+  obstacle_state.veh_mode_st = 1;
   obstacle_state.auto_drive_enabled = true;
   assert(select_voice_id(obstacle_state) == 8);  // 再启动按当前检测状态恢复。
 
@@ -130,6 +137,7 @@ int main()
   assert(select_voice_id(fault_state) == 16); // 启动即静止故障也触发。
   fault_state.vehicle_running = true;
   assert(select_voice_id(fault_state) == 15); // 无自动启动授权也有效。
+  fault_state.veh_mode_st = 1;
   fault_state.auto_drive_enabled = true;
   fault_state.veh_gear_st = 1;
   fault_state.obs_detect_st = true;

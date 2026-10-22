@@ -116,12 +116,13 @@ public:
         update_voice_scene();
       });
     // 文档未定义，经用户授权暂定，名称、类型及单位待后续确认。
-    // 临时车速接口：Float32，km/h；保留最新原始反馈，非法值由起步任务视为未知。
+    // 临时车速接口：Float32，km/h；每条消息更新内部序号，供 ID 6 识别起步后新反馈。
     speed_sub_ = create_subscription<std_msgs::msg::Float32>(
       "veh_speed_st", rclcpp::QoS(1).best_effort(),
       [this](std_msgs::msg::Float32::ConstSharedPtr msg) {
         state_.speed_state_received = true;
         state_.veh_speed_st = msg->data;
+        ++state_.speed_feedback_seq; // 数值相同或非法也递增；序号不作为业务接口发布。
         update_voice_scene();
       });
     // 文档未定义，经用户授权暂定，名称、类型及取值待后续确认。

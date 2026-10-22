@@ -15,7 +15,7 @@ public:
   void observe(const VoiceSceneState & state, TimePoint now)
   {
     // 经用户确认：将自动模式下的有效启动近似映射为远程端点击发车。
-    const bool started = state.veh_mode_st == 1 && state.auto_drive_enabled;
+    const bool started = automatic_voice_enabled(state);
     if (!started) {
       close_window();
     } else if (!previous_started_) {

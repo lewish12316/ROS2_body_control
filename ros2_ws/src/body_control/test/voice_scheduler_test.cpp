@@ -16,6 +16,7 @@ VoiceScheduler::TimePoint at(std::int64_t milliseconds)
 VoiceSceneState forward_state()
 {
   VoiceSceneState state;
+  state.veh_mode_st = 1;
   state.auto_drive_enabled = true;
   state.running_state_received = true;
   state.vehicle_running = true;
@@ -57,6 +58,7 @@ void test_p0_periods_and_switching()
 {
   for (const int id : {12, 8, 11, 10, 9}) {
     VoiceSceneState state;
+    state.veh_mode_st = 1;
     state.auto_drive_enabled = true;
     if (id == 12) {state.veh_gear_st = 1;}
     if (id == 8) {state.obs_detect_st = true;}
@@ -81,6 +83,7 @@ void test_p0_periods_and_switching()
 
   VoiceScheduler scheduler;
   VoiceSceneState state;
+  state.veh_mode_st = 1;
   state.auto_drive_enabled = true;
   state.turn_state = 1;
   assert(scheduler.update(state, at(0)) == 10);
@@ -160,9 +163,10 @@ void test_cancel_and_reentry()
     if (condition >= 2) {
       AutoDriveGate gate;
       gate.set_mode(1);
+      state.veh_mode_st = 1;
       gate.set_start_command(true);
       if (condition == 2) {gate.set_start_command(false);}
-      if (condition == 3) {gate.set_mode(2);}
+      if (condition == 3) {gate.set_mode(2); state.veh_mode_st = 2;}
       state.auto_drive_enabled = gate.enabled();
     }
     scheduler.update(state, at(1000));
@@ -218,6 +222,7 @@ void test_fault_period_independent_of_mode_and_start()
   state.alarm_diag_st = 3;
   assert(!scheduler.update(state, at(2000))); // 正数等级改变不重置周期。
   gate.set_mode(1);
+  state.veh_mode_st = 1;
   state.auto_drive_enabled = gate.enabled();
   assert(!scheduler.update(state, at(2500)));
   gate.set_start_command(true);
@@ -228,6 +233,7 @@ void test_fault_period_independent_of_mode_and_start()
   assert(!scheduler.update(state, at(4000))); // 停止按钮不结束故障场景。
   assert(scheduler.update(state, at(5000)) == 15);
   gate.set_mode(2);
+  state.veh_mode_st = 2;
   state.auto_drive_enabled = gate.enabled();
   assert(!scheduler.update(state, at(6000)));
   assert(scheduler.update(state, at(10000)) == 15); // 遥控模式仍持续。
@@ -237,7 +243,7 @@ void test_fault_period_independent_of_mode_and_start()
   state.vehicle_running = true;
   assert(scheduler.update(state, at(16000)) == 15);
   state.alarm_diag_st = 0;
-  assert(!scheduler.update(state, at(17000)));
+  assert(scheduler.update(state, at(17000)) == 14); // 故障解除后恢复有效遥控行驶请求。
   assert(!scheduler.update(state, at(21000)));
   state.alarm_diag_st = 2;
   assert(scheduler.update(state, at(22000)) == 15); // 再次满足条件立即发出。
@@ -347,6 +353,7 @@ void test_stopped_fault_period_and_mode_independence()
   state.alarm_diag_st = 3;
   assert(!scheduler.update(state, at(2000)));
   gate.set_mode(1);
+  state.veh_mode_st = 1;
   state.auto_drive_enabled = gate.enabled();
   assert(!scheduler.update(state, at(2500)));
   gate.set_start_command(true);
@@ -357,11 +364,12 @@ void test_stopped_fault_period_and_mode_independence()
   assert(!scheduler.update(state, at(4000)));
   assert(scheduler.update(state, at(5000)) == 16);
   gate.set_mode(2);
+  state.veh_mode_st = 2;
   state.auto_drive_enabled = gate.enabled();
   assert(!scheduler.update(state, at(6000)));
   assert(scheduler.update(state, at(10000)) == 16); // 遥控模式不阻断。
   state.alarm_diag_st = 0;
-  assert(!scheduler.update(state, at(11000)));
+  assert(scheduler.update(state, at(11000)) == 14); // 遥控切入请求仍在原10秒期限内。
   assert(!scheduler.update(state, at(15000)));
   state.alarm_diag_st = 2;
   assert(scheduler.update(state, at(16000)) == 16);

@@ -16,7 +16,7 @@ public:
   {
     // 自动模式有效启动近似 APP/小程序发车，已确认未锁近似箱门未关闭。
     // 未锁不等于门未关闭，现有接口无法确认箱门实际开闭或 APP 点击来源。
-    const bool enabled = state.veh_mode_st == 1 && state.auto_drive_enabled &&
+    const bool enabled = automatic_voice_enabled(state) &&
       state.trunk_lock_state_received && !state.trunk_lock_st;
     if (!enabled) {
       next_due_.reset();

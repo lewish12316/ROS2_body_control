@@ -8,94 +8,100 @@
 
 VoiceScheduler::TimePoint at(std::int64_t ms)
 {return VoiceScheduler::TimePoint{} + std::chrono::milliseconds(ms);}
-
+void feedback(VoiceSceneState & s, float speed)
+{
+  s.speed_state_received = true;
+  s.veh_speed_st = speed;
+  ++s.speed_feedback_seq; // 模拟订阅回调，每条反馈都递增，包括相同值和非法值。
+}
 VoiceSceneState stationary()
 {
   VoiceSceneState s;
   s.veh_mode_st = 1; s.auto_drive_enabled = true;
   s.running_state_received = true; s.vehicle_running = false;
-  s.speed_state_received = true; s.veh_speed_st = 1.0F;
+  feedback(s, 1.0F);
   return s;
 }
 
-void test_initial_feedback_and_repeat_starts()
+void test_initial_feedback_and_repeated_starts()
 {
   VoiceScheduler scheduler;
-  auto s = stationary();
-  s.running_state_received = false;
+  auto s = stationary(); s.running_state_received = false;
   assert(!scheduler.update(s, at(0)));
   s.running_state_received = true; s.vehicle_running = true;
-  assert(!scheduler.update(s, at(1000))); // 首次 true 只初始化。
-  assert(!scheduler.update(s, at(2000)));
+  assert(!scheduler.update(s, at(1000)));
+  feedback(s, 1.0F); assert(!scheduler.update(s, at(1001))); // 首次true不构造事件。
   for (int t : {3000, 10000, 20000}) {
     s.vehicle_running = false; assert(!scheduler.update(s, at(t)));
-    s.vehicle_running = true; assert(scheduler.update(s, at(t + 1)) == 6);
-    assert(!scheduler.update(s, at(t + 2)));
+    s.vehicle_running = true; assert(!scheduler.update(s, at(t + 1)));
+    feedback(s, 1.0F); assert(scheduler.update(s, at(t + 2)) == 6);
+    feedback(s, 1.0F); assert(!scheduler.update(s, at(t + 3)));
     assert(!scheduler.update(s, at(t + 3001)));
   }
 }
 
-void test_authorization_and_modes()
+void test_old_speed_and_fresh_boundaries()
 {
-  for (int mode : {0, 1, 2}) {
-    VoiceScheduler scheduler;
-    auto s = stationary(); s.veh_mode_st = mode; s.auto_drive_enabled = false;
-    const auto first = scheduler.update(s, at(0));
-    if (mode == 2) {assert(first == 14);} else {assert(!first);}
-    s.vehicle_running = true;
-    const auto moving = scheduler.update(s, at(100));
-    if (mode == 2) {assert(moving == 14);} else {assert(!moving);}
-    s.veh_mode_st = 1; s.auto_drive_enabled = true;
-    assert(!scheduler.update(s, at(200))); // 授权外的起步不缓存。
-    assert(!scheduler.update(s, at(1000)));
-    s.vehicle_running = false; assert(!scheduler.update(s, at(1100)));
-    s.vehicle_running = true; assert(scheduler.update(s, at(1200)) == 6);
+  for (float old : {0.0F, 1.0F, 8.0F}) {
+    for (int received : {100000, 102999, 103000}) {
+      VoiceScheduler scheduler;
+      auto s = stationary(); feedback(s, old);
+      assert(!scheduler.update(s, at(0)));
+      s.vehicle_running = true;
+      assert(!scheduler.update(s, at(100000))); // 无论旧低速或旧高速都不能决定本次起步。
+      feedback(s, 1.0F);
+      const auto result = scheduler.update(s, at(received));
+      if (received < 103000) {assert(result == 6);} else {assert(!result);}
+      assert(!scheduler.update(s, at(104000)));
+    }
   }
-  VoiceScheduler scheduler;
-  auto s = stationary(); s.auto_drive_enabled = false;
-  assert(!scheduler.update(s, at(0)));
-  s.auto_drive_enabled = true; assert(!scheduler.update(s, at(100)));
-  s.vehicle_running = true; assert(scheduler.update(s, at(200)) == 6);
-}
-
-void test_speed_values_and_late_feedback()
-{
+  VoiceScheduler no_feedback;
+  auto s = stationary(); assert(!no_feedback.update(s, at(0)));
+  s.vehicle_running = true; assert(!no_feedback.update(s, at(1000)));
+  assert(!no_feedback.update(s, at(3999)));
+  assert(!no_feedback.update(s, at(4000)));
+  feedback(s, 1.0F); assert(!no_feedback.update(s, at(4001)));
   for (float speed : {0.0F, 4.999F, 5.0F, 6.0F}) {
     VoiceScheduler scheduler;
-    auto s = stationary(); s.veh_speed_st = speed;
-    assert(!scheduler.update(s, at(0)));
-    s.vehicle_running = true;
-    const auto result = scheduler.update(s, at(1000));
-    if (speed < 5.0F) {assert(result == 6);} else {assert(!result);}
-    s.veh_speed_st = 1.0F;
-    assert(!scheduler.update(s, at(1100))); // 已发或超速取消，同次行驶不重试。
-  }
-  for (int received_at : {1000, 3999, 4000}) {
-    VoiceScheduler scheduler;
-    auto s = stationary(); s.speed_state_received = false; s.veh_speed_st = 0.0F;
-    assert(!scheduler.update(s, at(0)));
+    s = stationary(); assert(!scheduler.update(s, at(0)));
     s.vehicle_running = true; assert(!scheduler.update(s, at(1000)));
-    s.speed_state_received = true;
-    const auto result = scheduler.update(s, at(received_at));
-    if (received_at < 4000) {assert(result == 6);} else {assert(!result);}
-    assert(!scheduler.update(s, at(5000)));
+    feedback(s, speed);
+    const auto result = scheduler.update(s, at(1100));
+    if (speed < 5.0F) {assert(result == 6);} else {assert(!result);}
+    feedback(s, 1.0F); assert(!scheduler.update(s, at(1200))); // 已发/高速取消不重试。
   }
-  const float infinity = std::numeric_limits<float>::infinity();
-  for (float invalid : {-1.0F, infinity, -infinity, std::numeric_limits<float>::quiet_NaN()}) {
+}
+
+void test_invalid_new_speed_and_missing_feedback()
+{
+  const float inf = std::numeric_limits<float>::infinity();
+  for (float invalid : {-1.0F, inf, -inf, std::numeric_limits<float>::quiet_NaN()}) {
     for (int repaired : {3999, 4000}) {
       VoiceScheduler scheduler;
-      auto s = stationary(); s.veh_speed_st = invalid;
+      auto s = stationary(); s.speed_state_received = false;
       assert(!scheduler.update(s, at(0)));
       s.vehicle_running = true; assert(!scheduler.update(s, at(1000)));
-      assert(!scheduler.update(s, at(2000)));
-      s.veh_speed_st = 0.0F;
+      feedback(s, invalid); assert(!scheduler.update(s, at(2000)));
+      feedback(s, 0.0F);
       const auto result = scheduler.update(s, at(repaired));
       if (repaired < 4000) {assert(result == 6);} else {assert(!result);}
     }
   }
+  // 一次更新中边沿与车速已同时变化，也不把该缓存当成边沿之后的新消息。
+  VoiceScheduler simultaneous;
+  auto s = stationary(); assert(!simultaneous.update(s, at(0)));
+  s.vehicle_running = true; feedback(s, 1.0F);
+  assert(!simultaneous.update(s, at(1000)));
+  feedback(s, 1.0F); assert(simultaneous.update(s, at(1100)) == 6);
+  // 无需序号递增到更大，只需不同：无符号计数回绕仍识别下一条新消息。
+  VoiceScheduler wrap;
+  s = stationary(); s.speed_feedback_seq = std::numeric_limits<std::uint64_t>::max();
+  assert(!wrap.update(s, at(0)));
+  s.vehicle_running = true; assert(!wrap.update(s, at(1000)));
+  feedback(s, 1.0F); assert(wrap.update(s, at(1001)) == 6);
 }
 
-void test_p0_blocking_timeout_and_duplicates()
+void test_p0_blocking_and_original_deadline()
 {
   for (int p0 : {15, 12, 8, 10, 9}) {
     for (int clear : {3999, 4000}) {
@@ -108,8 +114,8 @@ void test_p0_blocking_timeout_and_duplicates()
       if (p0 == 10) {s.turn_state = 1;}
       if (p0 == 9) {s.turn_state = 2;}
       assert(scheduler.update(s, at(1000)) == p0);
-      assert(!scheduler.update(s, at(2000))); // 重复输入与 P0 间隙不发送、不延长。
-      assert(!scheduler.update(s, at(3998)));
+      feedback(s, 1.0F); assert(!scheduler.update(s, at(2000)));
+      feedback(s, 1.0F); assert(!scheduler.update(s, at(3998))); // 不延长边沿期限。
       s.alarm_diag_st = 0; s.veh_gear_st = 0; s.obs_detect_st = false; s.turn_state = 0;
       const auto result = scheduler.update(s, at(clear));
       if (clear < 4000) {assert(result == 6);} else {assert(!result);}
@@ -118,107 +124,84 @@ void test_p0_blocking_timeout_and_duplicates()
   }
 }
 
-void test_cancellation_while_blocked()
+void test_cancellation_and_freshness_per_start()
 {
   for (int reason = 0; reason < 5; ++reason) {
     VoiceScheduler scheduler;
     auto s = stationary(); assert(!scheduler.update(s, at(0)));
     s.alarm_diag_st = 1; s.vehicle_running = true;
     assert(scheduler.update(s, at(1000)) == 15);
+    feedback(s, 1.0F); assert(!scheduler.update(s, at(1100)));
     if (reason == 0) {s.vehicle_running = false;}
     if (reason == 1) {s.auto_drive_enabled = false;}
-    if (reason == 2) {s.veh_mode_st = 0;}
-    if (reason == 3) {s.veh_speed_st = 5.0F;}
-    if (reason == 4) {s.veh_speed_st = 8.0F;}
+    if (reason == 2) {s.veh_mode_st = 99;}
+    if (reason == 3) {feedback(s, 5.0F);}
+    if (reason == 4) {feedback(s, 8.0F);}
     const auto canceled = scheduler.update(s, at(2000));
     if (reason == 0) {assert(canceled == 16);} else {assert(!canceled);}
-    s.alarm_diag_st = 0;
-    assert(!scheduler.update(s, at(2100)));
-    s.auto_drive_enabled = true; s.veh_mode_st = 1; s.veh_speed_st = 1.0F;
-    if (reason == 0) {
-      s.vehicle_running = true; assert(scheduler.update(s, at(2200)) == 6);
-    } else {
-      assert(!scheduler.update(s, at(2200))); // 减速或重新授权不恢复已取消事件。
-      s.vehicle_running = false; assert(!scheduler.update(s, at(2300)));
-      s.vehicle_running = true; assert(scheduler.update(s, at(2400)) == 6);
-    }
+    s.alarm_diag_st = 0; assert(!scheduler.update(s, at(2100)));
+    s.auto_drive_enabled = true; s.veh_mode_st = 1; feedback(s, 1.0F);
+    assert(!scheduler.update(s, at(2200))); // 新低速也不能恢复已取消事件。
+    if (s.vehicle_running) {s.vehicle_running = false; assert(!scheduler.update(s, at(2300)));}
+    s.vehicle_running = true; assert(!scheduler.update(s, at(2400)));
+    feedback(s, 1.0F); assert(scheduler.update(s, at(2500)) == 6);
   }
-  // 阻塞期间非法车速替换旧的低速值，必须等有效值补齐，期限不重置。
   VoiceScheduler scheduler;
   auto s = stationary(); assert(!scheduler.update(s, at(0)));
   s.vehicle_running = true; s.alarm_diag_st = 1;
   assert(scheduler.update(s, at(1000)) == 15);
-  s.veh_speed_st = -1.0F; assert(!scheduler.update(s, at(2000)));
+  feedback(s, 1.0F); assert(!scheduler.update(s, at(1100)));
+  feedback(s, -1.0F); assert(!scheduler.update(s, at(2000)));
   s.alarm_diag_st = 0; assert(!scheduler.update(s, at(3000)));
-  s.veh_speed_st = 1.0F; assert(scheduler.update(s, at(3999)) == 6);
+  feedback(s, 1.0F); assert(scheduler.update(s, at(3999)) == 6);
 }
 
-void test_priority_and_no_extra_gates()
+void test_priority_and_waiting_does_not_block()
 {
   VoiceScheduler scheduler;
-  auto s = stationary();
-  s.trunk_lock_state_received = true; s.trunk_lock_st = true;
+  auto s = stationary(); s.trunk_lock_state_received = true; s.trunk_lock_st = true;
   assert(!scheduler.update(s, at(0)));
   s.trunk_lock_st = false; assert(scheduler.update(s, at(0)) == 5);
-  // 所有已就绪的自动模式 P1：1 -> 6 -> 2 -> 7。
-  s.vehicle_running = true; s.veh_gear_st = 3;
+  // 先记录起步并用P0阻塞，让1/6/2/7同时就绪再验证原优先级。
+  s.vehicle_running = true; s.veh_gear_st = 3; s.alarm_diag_st = 1;
+  assert(scheduler.update(s, at(59000)) == 15);
+  feedback(s, 1.0F); assert(!scheduler.update(s, at(59500)));
+  s.alarm_diag_st = 0;
   assert(scheduler.update(s, at(60000)) == 1);
   assert(scheduler.update(s, at(60000)) == 6);
   assert(scheduler.update(s, at(60000)) == 2);
   assert(scheduler.update(s, at(60000)) == 7);
   assert(!scheduler.update(s, at(60000)));
-  // 请求 ID 1 不能延长 ID 6 的 3 秒期限。
   s.vehicle_running = false; assert(!scheduler.update(s, at(69000)));
   s.vehicle_running = true; s.alarm_diag_st = 1;
   assert(scheduler.update(s, at(70000)) == 15);
+  feedback(s, 1.0F); assert(!scheduler.update(s, at(70100)));
   s.alarm_diag_st = 0;
   assert(scheduler.update(s, at(72999)) == 1);
-  assert(scheduler.update(s, at(73000)) == 7); // 起步过期，ID 7 仍在自身期限内。
-  assert(!scheduler.update(s, at(73000)));
-  // 到站/EPB/非D挡均不限制 ID 6。R挡本身的P0仍优先。
-  for (int gear : {0, 2}) {
-    VoiceScheduler other;
-    auto state = stationary(); state.veh_gear_st = gear;
-    state.veh_arrive_st = true; state.veh_epb_st = true;
-    const auto first = other.update(state, at(0));
-    if (gear == 2) {assert(first == 3);} else {assert(!first);}
-    state.vehicle_running = true;
-    assert(other.update(state, at(1000)) == 6);
-    if (gear == 2) {assert(other.update(state, at(1050)) == 4);}
-  }
-}
-
-void test_waiting_speed_does_not_block_and_low_battery_ends()
-{
-  VoiceScheduler scheduler;
-  auto s = stationary(); s.speed_state_received = false;
-  s.veh_gear_st = 3;
-  assert(!scheduler.update(s, at(0)));
-  s.vehicle_running = true;
-  assert(scheduler.update(s, at(1000)) == 7); // 等车速不阻塞前进。
-  s.speed_state_received = true; assert(scheduler.update(s, at(2000)) == 6);
-  assert(!scheduler.update(s, at(2001)));
-  VoiceScheduler low;
-  s = stationary(); s.battery_low_power_st = true;
-  assert(low.update(s, at(0)) == 17);
-  s.vehicle_running = true;
-  assert(low.update(s, at(1000)) == 6); // 行驶使低电量任务按原规则取消。
-  assert(!low.update(s, at(10000)));
-  // 只等待车速也不阻塞 P2。
+  assert(scheduler.update(s, at(73000)) == 7); // ID1不延长ID6的3秒期限。
+  VoiceScheduler forward;
+  s = stationary(); s.veh_gear_st = 3;
+  assert(!forward.update(s, at(0)));
+  s.vehicle_running = true; assert(forward.update(s, at(1000)) == 7);
+  feedback(s, 1.0F); assert(forward.update(s, at(2000)) == 6);
   VoiceScheduler cargo;
-  s = stationary(); s.speed_state_received = false;
-  assert(!cargo.update(s, at(0)));
+  s = stationary(); assert(!cargo.update(s, at(0)));
   s.vehicle_running = true; s.veh_arrive_st = true; s.veh_gear_st = 2; s.veh_epb_st = true;
   assert(cargo.update(s, at(1000)) == 3);
   assert(cargo.update(s, at(1050)) == 4);
-  s.speed_state_received = true; assert(cargo.update(s, at(3999)) == 6);
+  feedback(s, 1.0F); assert(cargo.update(s, at(3999)) == 6);
+  VoiceScheduler low;
+  s = stationary(); s.battery_low_power_st = true;
+  assert(low.update(s, at(0)) == 17);
+  s.vehicle_running = true; assert(!low.update(s, at(1000)));
+  feedback(s, 1.0F); assert(low.update(s, at(1100)) == 6);
+  assert(!low.update(s, at(10000)));
 }
 
 int main()
 {
-  test_initial_feedback_and_repeat_starts(); test_authorization_and_modes();
-  test_speed_values_and_late_feedback(); test_p0_blocking_timeout_and_duplicates();
-  test_cancellation_while_blocked(); test_priority_and_no_extra_gates();
-  test_waiting_speed_does_not_block_and_low_battery_ends();
+  test_initial_feedback_and_repeated_starts(); test_old_speed_and_fresh_boundaries();
+  test_invalid_new_speed_and_missing_feedback(); test_p0_blocking_and_original_deadline();
+  test_cancellation_and_freshness_per_start(); test_priority_and_waiting_does_not_block();
   std::cout << "Start voice checks passed\n";
 }
