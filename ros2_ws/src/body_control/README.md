@@ -1,6 +1,6 @@
 # 车身控制节点
 
-`body_control_node` 实现危险警报灯、制动灯/高位制动灯、转向灯和倒车灯控制请求、自动驾驶启动请求，以及等红绿灯、车辆起步、箱门未关闭、装卸货完成确认、开锁成功、装卸货和关闭箱门提醒、低电量、远程/遥控驾驶、行驶故障、故障停车、自动驾驶前进、障碍物、左右转、倒车、行人礼让语音请求。节点不负责底盘模式仲裁、门锁控制、路径绕行、靠边停车、刹车或播放音频。
+`body_control_node` 实现 ADS 指示灯、危险警报灯、制动灯/高位制动灯、转向灯和倒车灯控制请求、自动驾驶启动请求，以及等红绿灯、车辆起步、箱门未关闭、装卸货完成确认、开锁成功、装卸货和关闭箱门提醒、低电量、远程/遥控驾驶、行驶故障、故障停车、自动驾驶前进、障碍物、左右转、倒车、行人礼让语音请求。节点不负责底盘模式仲裁、门锁控制、路径绕行、靠边停车、刹车或播放音频。
 
 ## 输入和输出
 
@@ -23,12 +23,14 @@
 | 输入 | `/veh_brake_st` | `std_msgs/msg/Bool` | 文档已有车辆制动状态：false 解除、true 生效 |
 | 输入 | `/emergency_stop_st` | `std_msgs/msg/Bool` | 文档未定义，经用户授权暂定：false 解除、true 急停有效，默认 false |
 | 输入 | `/mode_transition_abnormal_st` | `std_msgs/msg/Bool` | 文档未定义，经用户授权暂定：false 解除、true 模式异常切换有效，默认 false |
+| 输入 | `/ads_abnormal_st` | `std_msgs/msg/Bool` | 文档未定义，经用户授权暂定：false 正常、true 智驾异常或功能降级失效，默认 false |
 | 输入 | `/pedestrian_cross_st` | `std_msgs/msg/Bool` | true 检测到行人横穿 |
 | 输出 | `/ad_mode_req` | `std_msgs/msg/Bool` | true 自动驾驶模式请求、false 退出请求 |
 | 输出 | `/reverse_light_req` | `std_msgs/msg/Bool` | 文档已有倒车灯请求：false 关闭、true 开启 |
 | 输出 | `/turn_light_req` | `std_msgs/msg/Int32` | 文档已有转向灯请求：0 关闭、1 左转向、2 右转向；下游执行闪烁 |
 | 输出 | `/brake_light_req` | `std_msgs/msg/Bool` | 文档已有制动灯请求：false 关闭、true 开启；下游同步控制制动灯和高位制动灯 |
 | 输出 | `/hazard_light_req` | `std_msgs/msg/Bool` | 文档已有危险警报灯请求：false 关闭、true 请求双侧同步高频闪烁 |
+| 输出 | `/ads_light_req` | `std_msgs/msg/Int32` | 文档已有 ADS 指示灯请求：0 关闭、1 常亮、2 高频闪烁；下游执行 |
 | 输出 | `/voice_broadcast_id` | `std_msgs/msg/Int32` | 1 箱门未关闭、2 装卸货完成确认、3 装卸货、4 提醒关闭箱门、5 开锁成功、6 车辆起步、7 自动驾驶前进、8 障碍物、9 右转、10 左转、11 行人礼让、12 倒车、13 等红绿灯、14 远程/遥控驾驶、15 行驶故障、16 故障停车、17 低电量 |
 
 规范中 `ad_mode_req` 是 0/1 枚举，本示例按当前需求用 Bool 承载 false/true。接入实际车辆时需和接收端约定一致的消息类型。
@@ -320,6 +322,42 @@ ros2 topic pub --once /obs_detect_st std_msgs/msg/Bool "{data: false}"
 ```
 
 自动测试沿用前述 `colcon test` 命令。`hazard_light_test` 使用可控时间覆盖 29999/30000ms 边界、重复输入、中断重计时、迟到检查、全部 64 种原因组合及逐项解除。`hazard_light_ros_test` 启动实际节点验证新接口及 QoS、周期刷新、即时触发响应、真实 30 秒到期、未知行驶状态、遥控静止保持、启动按钮无关性和单侧转向请求保留。仅对即时输出变化测量收发耗时并要求本机不超过 100ms，不代表最坏调度或实灯响应保证；其他灯光和语音测试一并回归。
+
+## ADS 指示灯控制
+
+| 当前条件 | `ads_light_req` |
+| --- | --- |
+| `veh_mode_st=1` 且 `ads_abnormal_st=false` | 1 常亮 |
+| `veh_mode_st=1` 且 `ads_abnormal_st=true` | 2 高频闪烁请求 |
+| 待机、遥控、未知或尚未收到模式 | 0 关闭 |
+
+**文档未定义，经用户授权暂定：`ads_abnormal_st` 是 Bool 输入，true 表示智驾异常或功能降级失效，false 表示正常，默认 false，由上游负责置位和解除。** 声明和订阅均标注授权。未收到异常反馈时按默认 false 处理，进入自动模式即可常亮；不要求启动按钮或行驶状态。不以整车故障、模式异常切换、自检或传感器故障直接推断 ADS 异常。
+
+非自动模式优先关闭，即使异常仍有效；切回自动模式按缓存的异常状态恢复。初始化发布 0，模式和异常回调更新后立即发布，先于语音调度；复用 50ms 定时器刷新。新输入采用 best_effort、深度 1，输出采用 reliable、深度 1、volatile。通信中断保留最后状态，不新增超时规则或其他业务接口、配置参数。
+
+持续输出 2 由下游 BCM/驱动执行高频闪烁，1 常亮、0 关闭；节点不生成明暗节奏，不新增频率参数。ADS 灯独立于危险警报灯、其他灯光及语音请求，既有控制规则保持不变。实灯频率、亮度、故障诊断及硬件响应由下游台架验收。
+
+### ADS 指示灯验证
+
+按下一节编译运行节点，在另一个已加载 ROS 环境的终端观察：
+
+```bash
+ros2 topic echo /ads_light_req
+```
+
+在第三个已加载 ROS 环境的终端逐条执行，预期依次为自动模式正常常亮 1、异常闪烁 2、遥控关闭 0、切回自动恢复闪烁 2、异常解除恢复常亮 1：
+
+```bash
+ros2 topic pub --once /veh_mode_st std_msgs/msg/Int32 "{data: 1}"
+ros2 topic pub --once /ads_abnormal_st std_msgs/msg/Bool "{data: true}"
+ros2 topic pub --once /veh_mode_st std_msgs/msg/Int32 "{data: 2}"
+ros2 topic pub --once /veh_mode_st std_msgs/msg/Int32 "{data: 1}"
+ros2 topic pub --once /ads_abnormal_st std_msgs/msg/Bool "{data: false}"
+```
+
+示例假定新启动节点且没有其他程序发布同名输入，无需按启动按钮；遥控模式也会按已有规则触发危险警报灯，不影响 ADS 输出为 0。
+
+启用 `BUILD_TESTING=ON` 编译后，运行前述 `colcon test` 命令。新增 `ads_light_test` 启动实际节点验证默认关闭、未收到异常反馈时的自动常亮、异常切换、两种输入顺序、非自动模式优先、模式恢复、重复输入、50ms 刷新、新接口 QoS 及其他状态无关性。只对输出实际改变的事件测量输入发送至请求接收耗时，要求本机不超过 100ms，不代表最坏调度或实灯响应保证；既有灯光及语音测试一并回归。
 
 ## 编译和运行
 
